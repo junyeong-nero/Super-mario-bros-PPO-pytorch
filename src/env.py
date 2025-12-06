@@ -9,13 +9,49 @@ if not hasattr(np, "bool8"):
     np.bool8 = np.bool_
 
 import gym_super_mario_bros
-from gym.spaces import Box
-from gym import Wrapper
+from gymnasium import Env, Wrapper
+from gymnasium.spaces import Box
 from nes_py.wrappers import JoypadSpace
 from gym_super_mario_bros.actions import SIMPLE_MOVEMENT, COMPLEX_MOVEMENT, RIGHT_ONLY
 import cv2
 import subprocess as sp
 import torch.multiprocessing as mp
+
+
+class GymToGymnasiumAdapter(Env):
+    """Lightweight adapter so old Gym envs/wrappers satisfy gymnasium.Env checks."""
+
+    def __init__(self, env):
+        self.env = env
+        self.action_space = env.action_space
+        self.observation_space = env.observation_space
+        metadata = dict(getattr(env, "metadata", {}))
+        # Promote legacy Gym metadata keys to Gymnasium-compatible naming.
+        if "render.modes" in metadata and "render_modes" not in metadata:
+            metadata["render_modes"] = metadata["render.modes"]
+        self.metadata = metadata
+        self.reward_range = getattr(env, "reward_range", (-float("inf"), float("inf")))
+        self.spec = getattr(env, "spec", None)
+
+    def step(self, action):
+        return self.env.step(action)
+
+    def reset(self, **kwargs):
+        return self.env.reset(**kwargs)
+
+    def render(self, *args, **kwargs):
+        return self.env.render(*args, **kwargs)
+
+    def close(self):
+        return self.env.close()
+
+    def seed(self, seed=None):
+        if hasattr(self.env, "seed"):
+            return self.env.seed(seed)
+
+    @property
+    def unwrapped(self):
+        return getattr(self.env, "unwrapped", self.env)
 
 
 class Monitor:
@@ -178,6 +214,7 @@ def create_train_env(world, stage, actions, output_path=None, render_mode="rgb_a
         monitor = None
 
     env = JoypadSpace(env, actions)
+    env = GymToGymnasiumAdapter(env)
     env = CustomReward(env, world, stage, monitor)
     env = CustomSkipFrame(env)
     return env
