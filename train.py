@@ -9,7 +9,7 @@ import argparse
 import torch
 from src.env import MultipleEnvironments
 from src.model import PPO
-from trained_models.process import eval
+from src.process import eval
 import torch.multiprocessing as _mp
 from torch.distributions import Categorical
 import torch.nn.functional as F
