@@ -18,7 +18,15 @@ from gym.wrappers import FrameStack, GrayScaleObservation, TransformObservation
 import gym_super_mario_bros
 from gym_super_mario_bros.actions import SIMPLE_MOVEMENT, COMPLEX_MOVEMENT, RIGHT_ONLY
 
-JUMP_ONLY = [["right"], ["right", "A"]]
+JUMP_ONLY = [
+    ["right"],
+    ["right", "A"],
+    ["right", "A", "A"],
+    ["right", "A", "A", "A"],
+    ["right", "A", "A", "A", "A"],
+    ["right", "A", "A", "A", "A", "A"],
+    ["right", "A", "A", "A", "A", "A", "A"],
+]
 
 from nes_py.wrappers import JoypadSpace
 import torch.multiprocessing as mp
@@ -132,7 +140,38 @@ class CustomReward(GymWrapper):
 
     def step(self, action):
         # TODO implementation n_jumps
-        state, reward, terminated, truncated, info = _unwrap_step(self.env.step(action))
+        # state, reward, terminated, truncated, info = _unwrap_step(self.env.step(action))
+        # print(action)
+
+        state, reward, terminated, truncated, info = None, None, None, None, None
+        if action == 0:
+            state, reward, terminated, truncated, info = _unwrap_step(
+                self.env.step(action=0)
+            )
+        else:
+            for _ in range(action):
+                state, reward, terminated, truncated, info = _unwrap_step(
+                    self.env.step(action=1)
+                )
+                if terminated:
+                    break
+
+            on_air = True
+            mario_y_history = []
+            while on_air and not terminated:
+                state, reward, terminated, truncated, info = self.env.step(action=0)
+                if terminated:
+                    break
+
+                mario_y_history.append(info["y_pos"])
+                if len(mario_y_history) >= 3:
+                    if (
+                        mario_y_history[-3] == mario_y_history[-2]
+                        and mario_y_history[-2] == mario_y_history[-1]
+                    ):
+                        on_air = False
+
+        self.env.render()
         done = terminated or truncated
         if self.monitor:
             self.monitor.record(state)
@@ -235,8 +274,8 @@ def create_train_env(world, stage, actions, output_path=None, render_mode="human
         monitor = None
 
     env = JoypadSpace(env, actions)
-    env = CustomReward(env, world, stage, monitor)
     env = SkipFrame(env, skip=4)
+    env = CustomReward(env, world, stage, monitor)
     env = TransformObservation(env, f=normalize_observation)
     env = FrameStack(env, num_stack=1)
 
