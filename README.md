@@ -1,11 +1,11 @@
 # [PYTORCH] Proximal Policy Optimization (PPO) for playing Super Mario Bros
 
-- original repository from (vietnh1009/Super-mario-bros-PPO-pytorch)[https://github.com/vietnh1009/Super-mario-bros-PPO-pytorch]
+- original repository from [vietnh1009/Super-mario-bros-PPO-pytorch](https://github.com/vietnh1009/Super-mario-bros-PPO-pytorch)
 - I just renewal environment setup with `uv` for 2025.12
 
 ## Installation
 
-If you encountered `OverflowError: Python integer 1024 out of bounds for uint8` errors with `nes_py` packages, you can refer to (issues)[https://github.com/Kautenja/nes-py/issues/99s] of nes_py repository
+If you encountered `OverflowError: Python integer 1024 out of bounds for uint8` errors with `nes_py` packages, you can refer to [issues](https://github.com/Kautenja/nes-py/issues/99s) of nes_py repository
 
 ```
 uv sync
