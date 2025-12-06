@@ -4,12 +4,12 @@
 
 import os
 
-os.environ['OMP_NUM_THREADS'] = '1'
+os.environ["OMP_NUM_THREADS"] = "1"
 import argparse
 import torch
 from src.env import MultipleEnvironments
 from src.model import PPO
-from src.process import eval
+from trained_models.process import eval
 import torch.multiprocessing as _mp
 from torch.distributions import Categorical
 import torch.nn.functional as F
@@ -19,23 +19,40 @@ import shutil
 
 def get_args():
     parser = argparse.ArgumentParser(
-        """Implementation of model described in the paper: Proximal Policy Optimization Algorithms for Super Mario Bros""")
+        """Implementation of model described in the paper: Proximal Policy Optimization Algorithms for Super Mario Bros"""
+    )
     parser.add_argument("--world", type=int, default=1)
     parser.add_argument("--stage", type=int, default=1)
     parser.add_argument("--action_type", type=str, default="simple")
-    parser.add_argument('--lr', type=float, default=1e-4)
-    parser.add_argument('--gamma', type=float, default=0.9, help='discount factor for rewards')
-    parser.add_argument('--tau', type=float, default=1.0, help='parameter for GAE')
-    parser.add_argument('--beta', type=float, default=0.01, help='entropy coefficient')
-    parser.add_argument('--epsilon', type=float, default=0.2, help='parameter for Clipped Surrogate Objective')
-    parser.add_argument('--batch_size', type=int, default=16)
-    parser.add_argument('--num_epochs', type=int, default=10)
+    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument(
+        "--gamma", type=float, default=0.9, help="discount factor for rewards"
+    )
+    parser.add_argument("--tau", type=float, default=1.0, help="parameter for GAE")
+    parser.add_argument("--beta", type=float, default=0.01, help="entropy coefficient")
+    parser.add_argument(
+        "--epsilon",
+        type=float,
+        default=0.2,
+        help="parameter for Clipped Surrogate Objective",
+    )
+    parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument("--num_epochs", type=int, default=10)
     parser.add_argument("--num_local_steps", type=int, default=512)
     parser.add_argument("--num_global_steps", type=int, default=5e6)
     parser.add_argument("--num_processes", type=int, default=8)
-    parser.add_argument("--save_interval", type=int, default=50, help="Number of steps between savings")
-    parser.add_argument("--max_actions", type=int, default=200, help="Maximum repetition steps in test phase")
-    parser.add_argument("--log_path", type=str, default="tensorboard/ppo_super_mario_bros")
+    parser.add_argument(
+        "--save_interval", type=int, default=50, help="Number of steps between savings"
+    )
+    parser.add_argument(
+        "--max_actions",
+        type=int,
+        default=200,
+        help="Maximum repetition steps in test phase",
+    )
+    parser.add_argument(
+        "--log_path", type=str, default="tensorboard/ppo_super_mario_bros"
+    )
     parser.add_argument("--saved_path", type=str, default="trained_models")
     args = parser.parse_args()
     return args
@@ -52,12 +69,16 @@ def train(opt):
     if not os.path.isdir(opt.saved_path):
         os.makedirs(opt.saved_path)
     mp = _mp.get_context("spawn")
-    envs = MultipleEnvironments(opt.world, opt.stage, opt.action_type, opt.num_processes)
+    envs = MultipleEnvironments(
+        opt.world, opt.stage, opt.action_type, opt.num_processes
+    )
     model = PPO(envs.num_states, envs.num_actions)
     if torch.cuda.is_available():
         model.cuda()
     model.share_memory()
-    process = mp.Process(target=eval, args=(opt, model, envs.num_states, envs.num_actions))
+    process = mp.Process(
+        target=eval, args=(opt, model, envs.num_states, envs.num_actions)
+    )
     process.start()
     optimizer = torch.optim.Adam(model.parameters(), lr=opt.lr)
     [agent_conn.send(("reset", None)) for agent_conn in envs.agent_conns]
@@ -90,11 +111,19 @@ def train(opt):
             old_log_policy = old_m.log_prob(action)
             old_log_policies.append(old_log_policy)
             if torch.cuda.is_available():
-                [agent_conn.send(("step", act)) for agent_conn, act in zip(envs.agent_conns, action.cpu())]
+                [
+                    agent_conn.send(("step", act))
+                    for agent_conn, act in zip(envs.agent_conns, action.cpu())
+                ]
             else:
-                [agent_conn.send(("step", act)) for agent_conn, act in zip(envs.agent_conns, action)]
+                [
+                    agent_conn.send(("step", act))
+                    for agent_conn, act in zip(envs.agent_conns, action)
+                ]
 
-            state, reward, done, info = zip(*[agent_conn.recv() for agent_conn in envs.agent_conns])
+            state, reward, done, info = zip(
+                *[agent_conn.recv() for agent_conn in envs.agent_conns]
+            )
             state = torch.from_numpy(np.concatenate(state, 0))
             if torch.cuda.is_available():
                 state = state.cuda()
@@ -107,7 +136,10 @@ def train(opt):
             dones.append(done)
             curr_states = state
 
-        _, next_value, = model(curr_states)
+        (
+            _,
+            next_value,
+        ) = model(curr_states)
         next_value = next_value.squeeze()
         old_log_policies = torch.cat(old_log_policies).detach()
         actions = torch.cat(actions)
@@ -117,7 +149,12 @@ def train(opt):
         R = []
         for value, reward, done in list(zip(values, rewards, dones))[::-1]:
             gae = gae * opt.gamma * opt.tau
-            gae = gae + reward + opt.gamma * next_value.detach() * (1 - done) - value.detach()
+            gae = (
+                gae
+                + reward
+                + opt.gamma * next_value.detach() * (1 - done)
+                - value.detach()
+            )
             next_value = value
             R.append(gae + value)
         R = R[::-1]
@@ -127,17 +164,25 @@ def train(opt):
             indice = torch.randperm(opt.num_local_steps * opt.num_processes)
             for j in range(opt.batch_size):
                 batch_indices = indice[
-                                int(j * (opt.num_local_steps * opt.num_processes / opt.batch_size)): int((j + 1) * (
-                                        opt.num_local_steps * opt.num_processes / opt.batch_size))]
+                    int(
+                        j * (opt.num_local_steps * opt.num_processes / opt.batch_size)
+                    ) : int(
+                        (j + 1)
+                        * (opt.num_local_steps * opt.num_processes / opt.batch_size)
+                    )
+                ]
                 logits, value = model(states[batch_indices])
                 new_policy = F.softmax(logits, dim=1)
                 new_m = Categorical(new_policy)
                 new_log_policy = new_m.log_prob(actions[batch_indices])
                 ratio = torch.exp(new_log_policy - old_log_policies[batch_indices])
-                actor_loss = -torch.mean(torch.min(ratio * advantages[batch_indices],
-                                                   torch.clamp(ratio, 1.0 - opt.epsilon, 1.0 + opt.epsilon) *
-                                                   advantages[
-                                                       batch_indices]))
+                actor_loss = -torch.mean(
+                    torch.min(
+                        ratio * advantages[batch_indices],
+                        torch.clamp(ratio, 1.0 - opt.epsilon, 1.0 + opt.epsilon)
+                        * advantages[batch_indices],
+                    )
+                )
                 # critic_loss = torch.mean((R[batch_indices] - value) ** 2) / 2
                 critic_loss = F.smooth_l1_loss(R[batch_indices], value.squeeze())
                 entropy_loss = torch.mean(new_m.entropy())

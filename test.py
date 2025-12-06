@@ -1,11 +1,14 @@
 """
 @author: Viet Nguyen <nhviet1009@gmail.com>
 """
+
 import os
 
-os.environ['OMP_NUM_THREADS'] = '1'
+os.environ["OMP_NUM_THREADS"] = "1"
 import argparse
 import torch
+import numpy as np
+import cv2
 from src.env import create_train_env
 from src.model import PPO
 from gym_super_mario_bros.actions import SIMPLE_MOVEMENT, COMPLEX_MOVEMENT, RIGHT_ONLY
@@ -14,7 +17,8 @@ import torch.nn.functional as F
 
 def get_args():
     parser = argparse.ArgumentParser(
-        """Implementation of model described in the paper: Proximal Policy Optimization Algorithms for Contra Nes""")
+        """Implementation of model described in the paper: Proximal Policy Optimization Algorithms for Contra Nes"""
+    )
     parser.add_argument("--world", type=int, default=1)
     parser.add_argument("--stage", type=int, default=1)
     parser.add_argument("--action_type", type=str, default="simple")
@@ -35,15 +39,31 @@ def test(opt):
         actions = SIMPLE_MOVEMENT
     else:
         actions = COMPLEX_MOVEMENT
-    env = create_train_env(opt.world, opt.stage, actions,
-                           "{}/video_{}_{}.mp4".format(opt.output_path, opt.world, opt.stage))
+    env = create_train_env(
+        opt.world,
+        opt.stage,
+        actions,
+        "{}/video_{}_{}.mp4".format(opt.output_path, opt.world, opt.stage),
+    )
     model = PPO(env.observation_space.shape[0], len(actions))
     if torch.cuda.is_available():
-        model.load_state_dict(torch.load("{}/ppo_super_mario_bros_{}_{}".format(opt.saved_path, opt.world, opt.stage)))
+        model.load_state_dict(
+            torch.load(
+                "{}/ppo_super_mario_bros_{}_{}".format(
+                    opt.saved_path, opt.world, opt.stage
+                )
+            )
+        )
         model.cuda()
     else:
-        model.load_state_dict(torch.load("{}/ppo_super_mario_bros_{}_{}".format(opt.saved_path, opt.world, opt.stage),
-                                         map_location=lambda storage, loc: storage))
+        model.load_state_dict(
+            torch.load(
+                "{}/ppo_super_mario_bros_{}_{}".format(
+                    opt.saved_path, opt.world, opt.stage
+                ),
+                map_location=lambda storage, loc: storage,
+            )
+        )
     model.eval()
     state = torch.from_numpy(env.reset())
     while True:
@@ -54,10 +74,19 @@ def test(opt):
         action = torch.argmax(policy).item()
         state, reward, done, info = env.step(action)
         state = torch.from_numpy(state)
-        env.render()
+        frame = env.render()
+        # If we get raw frames (rgb_array), show them via OpenCV so gameplay is visible.
+        if isinstance(frame, np.ndarray):
+            cv2.imshow("Mario", cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+        else:
+            # Fallback for environments that handle their own rendering.
+            _ = frame
         if info["flag_get"]:
             print("World {} stage {} completed".format(opt.world, opt.stage))
             break
+    cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
