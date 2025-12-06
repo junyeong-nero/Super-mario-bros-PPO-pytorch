@@ -392,6 +392,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "gym-super-mario-bros" },
     { name = "gymnasium" },
+    { name = "numpy" },
     { name = "opencv-python" },
     { name = "torch" },
 ]
@@ -400,6 +401,7 @@ dependencies = [
 requires-dist = [
     { name = "gym-super-mario-bros", specifier = ">=7.4.0" },
     { name = "gymnasium", specifier = ">=1.2.2" },
+    { name = "numpy", specifier = ">=2.2.6" },
     { name = "opencv-python", specifier = ">=4.12.0.88" },
     { name = "torch", specifier = ">=2.9.1" },
 ]

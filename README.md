@@ -1,5 +1,18 @@
 # [PYTORCH] Proximal Policy Optimization (PPO) for playing Super Mario Bros
 
+- original repository from (vietnh1009/Super-mario-bros-PPO-pytorch)[https://github.com/vietnh1009/Super-mario-bros-PPO-pytorch]
+- I just renewal environment setup with `uv` for 2025.12
+
+## Installation
+
+If you encountered `OverflowError: Python integer 1024 out of bounds for uint8` errors with `nes_py` packages, you can refer to (issues)[https://github.com/Kautenja/nes-py/issues/99s] of nes_py repository
+
+```
+uv sync
+# pip install -r requirements.txt
+```
+
+
 ## Introduction
 
 Here is my python source code for training an agent to play super mario bros. By using Proximal Policy Optimization (PPO) algorithm introduced in the paper **Proximal Policy Optimization Algorithms** [paper](https://arxiv.org/abs/1707.06347).

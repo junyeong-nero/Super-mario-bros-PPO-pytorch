@@ -7,6 +7,7 @@ requires-python = ">=3.13"
 dependencies = [
     "gym-super-mario-bros>=7.4.0",
     "gymnasium>=1.2.2",
+    "numpy>=2.2.6",
     "opencv-python>=4.12.0.88",
     "torch>=2.9.1",
 ]
