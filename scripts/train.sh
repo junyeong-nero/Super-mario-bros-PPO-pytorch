@@ -1,0 +1,1 @@
+uv run train.py --world 5 --stage 2 --lr 1e-4

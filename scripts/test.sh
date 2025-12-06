@@ -1,0 +1,1 @@
+uv run test.py --world 5 --stage 2
