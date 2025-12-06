@@ -1,0 +1,69 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+__pycache__/
+*.pyc
+
+# Virtual environments
+.env
+.env.*
+.venv/
+env/
+venv/
+.python-version
+
+# Distribution / packaging
+.Python
+build/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+pip-wheel-metadata/
+share/python-wheels/
+
+# Testing / coverage
+.coverage*
+.cache/
+.pytest_cache/
+.tox/
+.nox/
+htmlcov/
+
+# Type checking / analysis
+.mypy_cache/
+.pyre/
+
+# Logs and local artifacts
+*.log
+*.tmp
+*.out
+*.err
+
+# IDEs / editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Model weights / run outputs
+output/
+trained_models/
+*.pt
+*.pth
+*.ckpt
+
+# Media generated during runs
+*.mp4
