@@ -2,24 +2,27 @@
 @author: Viet Nguyen <nhviet1009@gmail.com>
 """
 
+import argparse
 import os
+import shutil
 
 os.environ["OMP_NUM_THREADS"] = "1"
-import argparse
-import torch
-from src.env import MultipleEnvironments
-from src.model import PPO
-from src.process import eval
-import torch.multiprocessing as _mp
-from torch.distributions import Categorical
-import torch.nn.functional as F
+
 import numpy as np
-import shutil
+import torch
+import torch.nn.functional as F
+from torch.distributions import Categorical
+
+from src.env import ACTION_MAPPINGS, _unwrap_reset, create_train_env
+from src.model import PPO
 
 
 def get_args():
     parser = argparse.ArgumentParser(
-        """Implementation of model described in the paper: Proximal Policy Optimization Algorithms for Super Mario Bros"""
+        description=(
+            "Implementation of model described in the paper: "
+            "Proximal Policy Optimization Algorithms for Super Mario Bros"
+        )
     )
     parser.add_argument("--world", type=int, default=1)
     parser.add_argument("--stage", type=int, default=1)
@@ -59,40 +62,33 @@ def get_args():
 
 
 def train(opt):
-    if torch.cuda.is_available():
+    use_cuda = torch.cuda.is_available()
+    device = torch.device("cuda" if use_cuda else "cpu")
+    torch.manual_seed(123)
+    if use_cuda:
         torch.cuda.manual_seed(123)
-    else:
-        torch.manual_seed(123)
     if os.path.isdir(opt.log_path):
         shutil.rmtree(opt.log_path)
     os.makedirs(opt.log_path)
     if not os.path.isdir(opt.saved_path):
         os.makedirs(opt.saved_path)
-    mp = _mp.get_context("spawn")
-    envs = MultipleEnvironments(
-        opt.world, opt.stage, opt.action_type, opt.num_processes
-    )
-    model = PPO(envs.num_states, envs.num_actions)
-    if torch.cuda.is_available():
-        model.cuda()
-    model.share_memory()
-    process = mp.Process(
-        target=eval, args=(opt, model, envs.num_states, envs.num_actions)
-    )
-    process.start()
+    if opt.num_processes != 1:
+        print("Multiprocessing disabled; overriding num_processes to 1.")
+    actions_space = ACTION_MAPPINGS.get(opt.action_type, ACTION_MAPPINGS["complex"])
+    env = create_train_env(opt.world, opt.stage, actions_space)
+    num_states = env.observation_space.shape[0]
+    num_actions = len(actions_space)
+    model = PPO(num_states, num_actions).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=opt.lr)
-    [agent_conn.send(("reset", None)) for agent_conn in envs.agent_conns]
-    curr_states = [agent_conn.recv() for agent_conn in envs.agent_conns]
-    curr_states = torch.from_numpy(np.concatenate(curr_states, 0))
-    if torch.cuda.is_available():
-        curr_states = curr_states.cuda()
+    base_checkpoint = f"{opt.saved_path}/ppo_super_mario_bros_{opt.world}_{opt.stage}"
+
+    state_np, _ = _unwrap_reset(env.reset())
+    state = torch.from_numpy(np.asarray(state_np, dtype=np.float32)).to(device)
+    max_steps = int(opt.num_global_steps)
     curr_episode = 0
-    while True:
-        # if curr_episode % opt.save_interval == 0 and curr_episode > 0:
-        #     torch.save(model.state_dict(),
-        #                "{}/ppo_super_mario_bros_{}_{}".format(opt.saved_path, opt.world, opt.stage))
-        #     torch.save(model.state_dict(),
-        #                "{}/ppo_super_mario_bros_{}_{}_{}".format(opt.saved_path, opt.world, opt.stage, curr_episode))
+    total_steps = 0
+    last_save_step = 0
+    while total_steps < max_steps:
         curr_episode += 1
         old_log_policies = []
         actions = []
@@ -101,53 +97,42 @@ def train(opt):
         rewards = []
         dones = []
         for _ in range(opt.num_local_steps):
-            states.append(curr_states)
-            logits, value = model(curr_states)
-            values.append(value.squeeze())
+            states.append(state)
+            logits, value = model(state)
+            values.append(value.view(1))
             policy = F.softmax(logits, dim=1)
             old_m = Categorical(policy)
             action = old_m.sample()
             actions.append(action)
-            old_log_policy = old_m.log_prob(action)
-            old_log_policies.append(old_log_policy)
-            if torch.cuda.is_available():
-                [
-                    agent_conn.send(("step", act))
-                    for agent_conn, act in zip(envs.agent_conns, action.cpu())
-                ]
-            else:
-                [
-                    agent_conn.send(("step", act))
-                    for agent_conn, act in zip(envs.agent_conns, action)
-                ]
+            old_log_policies.append(old_m.log_prob(action))
 
-            state, reward, done, info = zip(
-                *[agent_conn.recv() for agent_conn in envs.agent_conns]
+            state_np, reward, terminated, truncated, info = env.step(action.item())
+            done = terminated or truncated
+            state = torch.from_numpy(np.asarray(state_np, dtype=np.float32)).to(device)
+            reward_tensor = torch.tensor([reward], dtype=torch.float32, device=device)
+            done_tensor = torch.tensor(
+                [float(done)], dtype=torch.float32, device=device
             )
-            state = torch.from_numpy(np.concatenate(state, 0))
-            if torch.cuda.is_available():
-                state = state.cuda()
-                reward = torch.cuda.FloatTensor(reward)
-                done = torch.cuda.FloatTensor(done)
-            else:
-                reward = torch.FloatTensor(reward)
-                done = torch.FloatTensor(done)
-            rewards.append(reward)
-            dones.append(done)
-            curr_states = state
+            rewards.append(reward_tensor)
+            dones.append(done_tensor)
+            total_steps += 1
+            if done:
+                state_np, _ = _unwrap_reset(env.reset())
+                state = torch.from_numpy(np.asarray(state_np, dtype=np.float32)).to(
+                    device
+                )
+            if total_steps >= max_steps:
+                break
 
-        (
-            _,
-            next_value,
-        ) = model(curr_states)
-        next_value = next_value.squeeze()
+        _, next_value = model(state)
+        next_value = next_value.view(1)
         old_log_policies = torch.cat(old_log_policies).detach()
         actions = torch.cat(actions)
         values = torch.cat(values).detach()
         states = torch.cat(states)
-        gae = 0
-        R = []
-        for value, reward, done in list(zip(values, rewards, dones))[::-1]:
+        gae = torch.zeros(1, device=device)
+        returns = []
+        for value, reward, done in reversed(list(zip(values, rewards, dones))):
             gae = gae * opt.gamma * opt.tau
             gae = (
                 gae
@@ -156,21 +141,18 @@ def train(opt):
                 - value.detach()
             )
             next_value = value
-            R.append(gae + value)
-        R = R[::-1]
-        R = torch.cat(R).detach()
-        advantages = R - values
-        for i in range(opt.num_epochs):
-            indice = torch.randperm(opt.num_local_steps * opt.num_processes)
+            returns.append(gae + value)
+        returns = torch.cat(list(reversed(returns))).detach()
+        advantages = returns - values
+        batch_size = states.size(0)
+        for _ in range(opt.num_epochs):
+            indices = torch.randperm(batch_size, device=device)
             for j in range(opt.batch_size):
-                batch_indices = indice[
-                    int(
-                        j * (opt.num_local_steps * opt.num_processes / opt.batch_size)
-                    ) : int(
-                        (j + 1)
-                        * (opt.num_local_steps * opt.num_processes / opt.batch_size)
-                    )
-                ]
+                start = int(j * batch_size / opt.batch_size)
+                end = int((j + 1) * batch_size / opt.batch_size)
+                if start >= end:
+                    continue
+                batch_indices = indices[start:end]
                 logits, value = model(states[batch_indices])
                 new_policy = F.softmax(logits, dim=1)
                 new_m = Categorical(new_policy)
@@ -183,15 +165,23 @@ def train(opt):
                         * advantages[batch_indices],
                     )
                 )
-                # critic_loss = torch.mean((R[batch_indices] - value) ** 2) / 2
-                critic_loss = F.smooth_l1_loss(R[batch_indices], value.squeeze())
+                critic_loss = F.smooth_l1_loss(returns[batch_indices], value.squeeze())
                 entropy_loss = torch.mean(new_m.entropy())
                 total_loss = actor_loss + critic_loss - opt.beta * entropy_loss
                 optimizer.zero_grad()
                 total_loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
                 optimizer.step()
-        print("Episode: {}. Total loss: {}".format(curr_episode, total_loss))
+        print(
+            f"Episode: {curr_episode}. Total loss: {total_loss}. Steps: {total_steps}"
+        )
+        if (
+            total_steps - last_save_step >= opt.save_interval
+            or total_steps >= max_steps
+        ):
+            torch.save(model.state_dict(), base_checkpoint)
+            # torch.save(model.state_dict(), f"{base_checkpoint}_{total_steps}")
+            last_save_step = total_steps
 
 
 if __name__ == "__main__":

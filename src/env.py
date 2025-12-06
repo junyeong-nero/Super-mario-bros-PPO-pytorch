@@ -2,56 +2,49 @@
 @author: Viet Nguyen <nhviet1009@gmail.com>
 """
 
+import cv2
 import numpy as np
+import subprocess as sp
 
 # NumPy 2.0 removed the bool8 alias that old Gym still references.
 if not hasattr(np, "bool8"):
     np.bool8 = np.bool_
 
+import gym
+from gym import Wrapper as GymWrapper
+from gym.spaces import Box
+from gym.wrappers import FrameStack, GrayScaleObservation, TransformObservation
+
 import gym_super_mario_bros
-from gymnasium import Env, Wrapper
-from gymnasium.spaces import Box
-from nes_py.wrappers import JoypadSpace
 from gym_super_mario_bros.actions import SIMPLE_MOVEMENT, COMPLEX_MOVEMENT, RIGHT_ONLY
-import cv2
-import subprocess as sp
+
+JUMP_ONLY = [["right"], ["right", "A"]]
+
+from nes_py.wrappers import JoypadSpace
 import torch.multiprocessing as mp
 
 
-class GymToGymnasiumAdapter(Env):
-    """Lightweight adapter so old Gym envs/wrappers satisfy gymnasium.Env checks."""
+class SkipFrame(GymWrapper):
+    """Repeat the same action for `skip` frames and accumulate rewards."""
 
-    def __init__(self, env):
-        self.env = env
-        self.action_space = env.action_space
-        self.observation_space = env.observation_space
-        metadata = dict(getattr(env, "metadata", {}))
-        # Promote legacy Gym metadata keys to Gymnasium-compatible naming.
-        if "render.modes" in metadata and "render_modes" not in metadata:
-            metadata["render_modes"] = metadata["render.modes"]
-        self.metadata = metadata
-        self.reward_range = getattr(env, "reward_range", (-float("inf"), float("inf")))
-        self.spec = getattr(env, "spec", None)
+    def __init__(self, env, skip):
+        super().__init__(env)
+        self._skip = skip
 
     def step(self, action):
-        return self.env.step(action)
-
-    def reset(self, **kwargs):
-        return self.env.reset(**kwargs)
-
-    def render(self, *args, **kwargs):
-        return self.env.render(*args, **kwargs)
-
-    def close(self):
-        return self.env.close()
-
-    def seed(self, seed=None):
-        if hasattr(self.env, "seed"):
-            return self.env.seed(seed)
-
-    @property
-    def unwrapped(self):
-        return getattr(self.env, "unwrapped", self.env)
+        total_reward = 0.0
+        last_obs, info = None, {}
+        terminated = False
+        truncated = False
+        for _ in range(self._skip):
+            obs, reward, term, trunc, info = _unwrap_step(self.env.step(action))
+            total_reward += reward
+            last_obs = obs
+            terminated = term or terminated
+            truncated = trunc or truncated
+            if terminated or truncated:
+                break
+        return last_obs, total_reward, terminated, truncated, info
 
 
 class Monitor:
@@ -80,38 +73,51 @@ class Monitor:
         try:
             self.pipe = sp.Popen(self.command, stdin=sp.PIPE, stderr=sp.PIPE)
         except FileNotFoundError:
-            pass
+            self.pipe = None
 
     def record(self, image_array):
-        self.pipe.stdin.write(image_array.tostring())
+        if self.pipe is not None:
+            self.pipe.stdin.write(image_array.tobytes())
 
 
 def process_frame(frame):
     if frame is not None:
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
         frame = cv2.resize(frame, (84, 84))[None, :, :] / 255.0
-        return frame
+        return frame.astype(np.float32)
     else:
-        return np.zeros((1, 84, 84))
+        return np.zeros((1, 84, 84), dtype=np.float32)
 
 
 def _unwrap_reset(result):
     """Normalize reset outputs across Gym / Gymnasium API versions."""
     if isinstance(result, tuple) and len(result) == 2:
-        return result[0]
-    return result
+        return result
+    return result, {}
 
 
 def _unwrap_step(result):
-    """Normalize step outputs across Gym / Gymnasium API versions."""
+    """Normalize step outputs to (state, reward, terminated, truncated, info)."""
     if len(result) == 5:
-        state, reward, terminated, truncated, info = result
-        done = terminated or truncated
-        return state, reward, done, info
-    return result
+        return result
+    # Legacy 4-tuple: (state, reward, done, info)
+    state, reward, done, info = result
+    return state, reward, done, False, info
 
 
-class CustomReward(Wrapper):
+def normalize_observation(observation):
+    """Scale observation to [0, 1] for TransformObservation (pickle-safe)."""
+    return (observation / 255.0).astype(np.float32)
+
+
+def _to_numpy(obs):
+    """Ensure observation is a NumPy array (handles LazyFrames)."""
+    if isinstance(obs, np.ndarray):
+        return obs.astype(np.float32, copy=False)
+    return np.asarray(obs, dtype=np.float32)
+
+
+class CustomReward(GymWrapper):
     def __init__(self, env=None, world=None, stage=None, monitor=None):
         super(CustomReward, self).__init__(env)
         self.observation_space = Box(low=0, high=255, shape=(1, 84, 84))
@@ -125,7 +131,9 @@ class CustomReward(Wrapper):
             self.monitor = None
 
     def step(self, action):
-        state, reward, done, info = _unwrap_step(self.env.step(action))
+        # TODO implementation n_jumps
+        state, reward, terminated, truncated, info = _unwrap_step(self.env.step(action))
+        done = terminated or truncated
         if self.monitor:
             self.monitor.record(state)
         state = process_frame(state)
@@ -160,15 +168,17 @@ class CustomReward(Wrapper):
                 done = True
 
         self.current_x = info["x_pos"]
-        return state, reward / 10.0, done, info
+        terminated = done or terminated
+        return state, reward / 10.0, terminated, truncated, info
 
     def reset(self):
         self.curr_score = 0
         self.current_x = 40
-        return process_frame(_unwrap_reset(self.env.reset()))
+        obs, info = _unwrap_reset(self.env.reset())
+        return process_frame(obs), info
 
 
-class CustomSkipFrame(Wrapper):
+class CustomSkipFrame(GymWrapper):
     def __init__(self, env, skip=4):
         super(CustomSkipFrame, self).__init__(env)
         self.observation_space = Box(low=0, high=255, shape=(skip, 84, 84))
@@ -179,32 +189,43 @@ class CustomSkipFrame(Wrapper):
         total_reward = 0
         last_states = []
         for i in range(self.skip):
-            state, reward, done, info = _unwrap_step(self.env.step(action))
+            state, reward, terminated, truncated, info = _unwrap_step(
+                self.env.step(action)
+            )
+            done = terminated or truncated
             total_reward += reward
             if i >= self.skip / 2:
                 last_states.append(state)
             if done:
                 self.reset()
+                terminated = done
                 return (
                     self.states[None, :, :, :].astype(np.float32),
                     total_reward,
-                    done,
+                    terminated,
+                    truncated,
                     info,
                 )
         max_state = np.max(np.concatenate(last_states, 0), 0)
         self.states[:-1] = self.states[1:]
         self.states[-1] = max_state
-        return self.states[None, :, :, :].astype(np.float32), total_reward, done, info
+        return (
+            self.states[None, :, :, :].astype(np.float32),
+            total_reward,
+            False,
+            False,
+            info,
+        )
 
     def reset(self):
-        state = _unwrap_reset(self.env.reset())
+        state, info = _unwrap_reset(self.env.reset())
         self.states = np.concatenate([state for _ in range(self.skip)], 0)
-        return self.states[None, :, :, :].astype(np.float32)
+        return self.states[None, :, :, :].astype(np.float32), info
 
 
-def create_train_env(world, stage, actions, output_path=None, render_mode="rgb_array"):
+def create_train_env(world, stage, actions, output_path=None, render_mode="human"):
     env = gym_super_mario_bros.make(
-        "SuperMarioBros-{}-{}-v0".format(world, stage),
+        "SuperMarioBros-{}-{}-v1".format(world, stage),
         apply_api_compatibility=True,
         render_mode=render_mode,
     )
@@ -214,21 +235,31 @@ def create_train_env(world, stage, actions, output_path=None, render_mode="rgb_a
         monitor = None
 
     env = JoypadSpace(env, actions)
-    env = GymToGymnasiumAdapter(env)
     env = CustomReward(env, world, stage, monitor)
-    env = CustomSkipFrame(env)
+    env = SkipFrame(env, skip=4)
+    env = TransformObservation(env, f=normalize_observation)
+    env = FrameStack(env, num_stack=1)
+
+    # origianl environments
+    # env = JoypadSpace(env, actions)
+    # env = GymToGymnasiumAdapter(env)
+    # env = CustomReward(env, world, stage, monitor)
+    # env = CustomSkipFrame(env)
     return env
+
+
+ACTION_MAPPINGS = {
+    "jump": JUMP_ONLY,
+    "right": RIGHT_ONLY,
+    "simple": SIMPLE_MOVEMENT,
+    "complex": COMPLEX_MOVEMENT,
+}
 
 
 class MultipleEnvironments:
     def __init__(self, world, stage, action_type, num_envs, output_path=None):
         self.agent_conns, self.env_conns = zip(*[mp.Pipe() for _ in range(num_envs)])
-        if action_type == "right":
-            actions = RIGHT_ONLY
-        elif action_type == "simple":
-            actions = SIMPLE_MOVEMENT
-        else:
-            actions = COMPLEX_MOVEMENT
+        actions = ACTION_MAPPINGS.get(action_type, COMPLEX_MOVEMENT)
         self.envs = [
             create_train_env(world, stage, actions, output_path=output_path)
             for _ in range(num_envs)
@@ -245,8 +276,15 @@ class MultipleEnvironments:
         while True:
             request, action = self.env_conns[index].recv()
             if request == "step":
-                self.env_conns[index].send(self.envs[index].step(action.item()))
+                state, reward, terminated, truncated, info = self.envs[index].step(
+                    action.item()
+                )
+                state = _to_numpy(state)
+                done = terminated or truncated
+                self.env_conns[index].send((state, reward, done, info))
             elif request == "reset":
-                self.env_conns[index].send(self.envs[index].reset())
+                obs, _ = _unwrap_reset(self.envs[index].reset())
+                obs = _to_numpy(obs)
+                self.env_conns[index].send(obs)
             else:
                 raise NotImplementedError

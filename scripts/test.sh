@@ -1,1 +1,4 @@
-uv run test.py --world 5 --stage 2
+uv run test.py \
+    --world 1 \
+    --stage 1 \
+    --action_type jump
