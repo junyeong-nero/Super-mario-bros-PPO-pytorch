@@ -11,6 +11,8 @@ import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
+
+from src.env import JUMP_ONLY
 from gym_super_mario_bros.actions import (
     COMPLEX_MOVEMENT,
     RIGHT_ONLY,
@@ -36,8 +38,6 @@ def get_args():
     args = parser.parse_args()
     return args
 
-
-JUMP_ONLY = [["right"], ["right", "A"]]
 
 ACTION_MAPPINGS = {
     "jump": JUMP_ONLY,
