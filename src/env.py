@@ -152,12 +152,7 @@ class CustomReward(Wrapper):
     """
 
     def __init__(
-        self,
-        env: gym.Env,
-        world: int,
-        stage: int,
-        actions: List[str],
-        monitor: Optional[Monitor] = None,
+        self, env: gym.Env, world: int, stage: int, monitor: Optional[Monitor] = None
     ):
         super().__init__(env)
         self.observation_space = Box(low=0, high=255, shape=(1, *TARGET_SHAPE))
@@ -165,8 +160,6 @@ class CustomReward(Wrapper):
         self.current_x = 40
         self.world = world
         self.stage = stage
-        self.actions = actions
-        self.is_jump_only = actions == JUMP_ONLY
         self.monitor = monitor
 
     def _apply_level_constraints(self, x_pos: int, y_pos: int) -> Tuple[float, bool]:
@@ -202,59 +195,41 @@ class CustomReward(Wrapper):
     def step(self, action: int):
         state, reward, terminated, truncated, info = None, 0.0, False, False, {}
 
-        if self.is_jump_only:
-
-            # JUMP_ONLY handles jump levels (0 ~ 6)
-            # - Level 0: +0 in x, +0 in y (No jump, just walk)
-            # - Level 1: +42 in x, +35 in y
-            # - Level 2: +56 in x, +46 in y
-            # - Level 3: +63 in x, +53 in y
-            # - Level 4: +70 in x, +60 in y
-            # - Level 5: +77 in x, +65 in y
-            # - Level 6: +84 in x, +68 in y
-
-            if action == 0:
+        # Handle custom action logic (0 is simple step, others repeat action 1)
+        if action == 0:
+            state, reward, terminated, truncated, info = _unwrap_step(self.env.step(0))
+        else:
+            # Execute jump/action sequence
+            for _ in range(action):
                 state, reward, terminated, truncated, info = _unwrap_step(
-                    self.env.step(0)
+                    self.env.step(1)
                 )
-            else:
-                # Execute jump/action sequence
-                for _ in range(action):
-                    state, reward, terminated, truncated, info = _unwrap_step(
-                        self.env.step(1)
+                if terminated or truncated:
+                    break
+
+            # Handle "On Air" logic
+            if not (terminated or truncated):
+                on_air = True
+                mario_y_history = []
+                while on_air:
+                    state, reward, term_step, trunc_step, info = _unwrap_step(
+                        self.env.step(0)
                     )
+                    terminated = terminated or term_step
+                    truncated = truncated or trunc_step
+
                     if terminated or truncated:
                         break
 
-                # Handle "On Air" logic
-                if not (terminated or truncated):
-                    on_air = True
-                    mario_y_history = []
-                    while on_air:
-                        state, reward, term_step, trunc_step, info = _unwrap_step(
-                            self.env.step(0)
-                        )
-                        terminated = terminated or term_step
-                        truncated = truncated or trunc_step
-
-                        if terminated or truncated:
-                            break
-
-                        mario_y_history.append(info["y_pos"])
-                        # Check if Mario has been at the same Y height for 3 frames (landed)
-                        if len(mario_y_history) >= 3:
-                            if (
-                                mario_y_history[-3]
-                                == mario_y_history[-2]
-                                == mario_y_history[-1]
-                            ):
-                                on_air = False
-        else:
-
-            # other actions use their own action spaces normarly
-            state, reward, terminated, truncated, info = _unwrap_step(
-                self.env.step(action)
-            )
+                    mario_y_history.append(info["y_pos"])
+                    # Check if Mario has been at the same Y height for 3 frames (landed)
+                    if len(mario_y_history) >= 3:
+                        if (
+                            mario_y_history[-3]
+                            == mario_y_history[-2]
+                            == mario_y_history[-1]
+                        ):
+                            on_air = False
 
         # Rendering and Recording
         self.env.render()
@@ -300,7 +275,6 @@ def create_mario_environment(
     world: int,
     stage: int,
     actions: List[List[str]],
-    skip_frame: int = 4,
     output_path: Optional[str] = None,
     render_mode: str = "human",
 ) -> gym.Env:
@@ -314,8 +288,8 @@ def create_mario_environment(
     monitor = Monitor(256, 240, output_path) if output_path else None
 
     env = JoypadSpace(env, actions)
-    env = CustomReward(env, world, stage, actions, monitor)
-    env = SkipFrame(env, skip=skip_frame)
+    env = SkipFrame(env, skip=4)
+    env = CustomReward(env, world, stage, monitor)
     env = TransformObservation(env, f=normalize_observation)
     env = FrameStack(env, num_stack=1)
 

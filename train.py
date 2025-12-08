@@ -15,7 +15,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Categorical
 
-
 # Set OMP threads before importing other heavy libraries if necessary
 os.environ["OMP_NUM_THREADS"] = "1"
 
@@ -32,7 +31,6 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--world", type=int, default=1)
     parser.add_argument("--stage", type=int, default=1)
     parser.add_argument("--action_type", type=str, default="simple")
-    parser.add_argument("--skip_frame", type=int, default=4)
 
     # Hyperparameters
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -197,9 +195,7 @@ def train(args: argparse.Namespace):
         print("Warning: Multiprocessing override enabled. Setting num_processes to 1.")
 
     actions_space = ACTION_MAPPINGS.get(args.action_type, ACTION_MAPPINGS["complex"])
-    env = create_mario_environment(
-        args.world, args.stage, actions_space, args.skip_frame
-    )
+    env = create_mario_environment(args.world, args.stage, actions_space)
 
     num_states = env.observation_space.shape[0]
     num_actions = len(actions_space)
