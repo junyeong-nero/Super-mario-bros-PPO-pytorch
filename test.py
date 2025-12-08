@@ -20,11 +20,11 @@ from gym.spaces import Space
 os.environ["OMP_NUM_THREADS"] = "1"
 
 # Local imports
-from src.env import create_mario_environment, _unwrap_reset
+from src.env import create_mario_environment
 from src.env import ACTION_MAPPINGS
 from src.model import PPO
 from src.schema import SuperMarioObs
-from src.utils import to_pil_image, tensor_to_pil
+from src.utils import *
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -107,6 +107,7 @@ def run_inference(args: argparse.Namespace):
 
     video_filename = output_path / f"video_{args.world}_{args.stage}.mp4"
     model_filename = saved_path / f"ppo_super_mario_bros_{args.world}_{args.stage}"
+    log_filename = output_path / f"obs_{args.world}_{args.stage}.txt"
 
     # Setup Device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -128,10 +129,12 @@ def run_inference(args: argparse.Namespace):
 
     # Initial Reset
     # Note: _unwrap_reset is technically private, consider exposing it publicly in src.env
-    state_np, _ = _unwrap_reset(env.reset())
-    state = process_state(state_np, device)
+    state_np, _, _, _, _ = env.reset()
+    state = preprocess_image(state_np)
 
     print("Starting inference... Press 'q' to quit.")
+
+    log_file = log_filename.open("a", encoding="utf-8")
 
     try:
         while True:
@@ -144,35 +147,32 @@ def run_inference(args: argparse.Namespace):
             # Step Environment
             state_next, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
+            state_next_np = preprocess_image(state_next)
+            print("!!!!!!!!!!!", state_next_np.shape)  # 1, 1, 84, 84
 
+            print("state_next: ", type(state_next), state_next.shape)
             obs = SuperMarioObs(
                 state={"image": state_next},
-                image=tensor_to_pil(state_next),
+                image=state_next,
                 info=info,
                 reward={"distance": info["x_pos"], "done": done},
             )
 
-            print(info)
+            print(obs.to_text())
 
-            # Render
-            frame = env.render()
-            if isinstance(frame, np.ndarray):
-                # Convert RGB (Gym) to BGR (OpenCV)
-                cv2.imshow(
-                    "Super Mario Bros PPO", cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                )
+            # # Persist human-readable description of the observation
+            # log_file.write(obs.to_text() + "\n\n")
+            # log_file.flush()
 
-                if cv2.waitKey(1) & 0xFF == ord("q"):
-                    print("Quitting...")
-                    break
+            # print(info)
 
             # Handle Reset or Continue
             if done:
                 print("Episode finished. Resetting...")
-                state_np, _ = _unwrap_reset(env.reset())
-                state = process_state(state_np, device)
+                state_np, _, _, _, _ = env.reset()
+                state = preprocess_image(state_np)
             else:
-                state = process_state(state_next, device)
+                state = state_next_np
 
             # Check for Stage Completion flag
             if info.get("flag_get"):
@@ -184,6 +184,7 @@ def run_inference(args: argparse.Namespace):
     except Exception as e:
         print(f"\nAn error occurred: {e}")
     finally:
+        log_file.close()
         cv2.destroyAllWindows()
         print("Resources released.")
 

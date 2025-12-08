@@ -1,40 +1,29 @@
-import os
-import json
+import base64
 import datetime
+import io
+import json
+import os
 import torch
 import numpy as np
 import cv2
 from PIL import Image
 from typing import Dict, Any, Optional, List
-from pydantic import BaseModel, Field, ConfigDict, model_validator
+from dataclasses import dataclass, field
 
 
-class SuperMarioObs(BaseModel):
-    """
-    Pydantic V2 모델로 변환된 SuperMarioObs
-    Obs 클래스가 믹스인(Mixin)이나 추상 클래스라면 (BaseModel, Obs) 형태로 상속받으세요.
-    """
-
-    # Numpy, Torch, PIL 객체 등을 필드로 허용하기 위한 설정
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    # 기본 필드 정의
-    state: Dict[str, Any]
-    info: Dict[str, Any]  # 예: {'coins': 0, ...}
-    reward: Dict[str, Any]
-
-    # init=False였던 필드들은 default_factory를 사용해 자동 생성되도록 설정
-    time: str = Field(
-        default_factory=lambda: datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+@dataclass
+class SuperMarioObs:
+    time: str = field(
+        default=datetime.datetime.now().strftime("%Y%m%d_%H%M%S"), init=False
     )
-
-    object_pattern_file: str = Field(
-        default_factory=lambda: os.path.join(
-            "assets", "game", "all_object_patterns.json"
-        )
+    state: dict
+    info: dict
+    reward: dict
+    object_pattern_file: str = field(
+        default=os.path.join("assets", "game", "all_object_patterns.json"),
+        init=False,
     )
-
-    thresholds: Dict[str, float] = Field(
+    thresholds: dict = field(
         default_factory=lambda: {
             "0_brick_brown": 0.8,
             "1_question_block_light": 0.8,
@@ -50,52 +39,75 @@ class SuperMarioObs(BaseModel):
             "7_item_mushroom_green": 0.7,
             "8_stair": 0.75,
             "9_flag": 0.8,
-        }
+        },
+        init=False,
     )
+    # LazyFrames나 numpy array를 받기 위해 Any 사용
+    image: Any = None
 
-    image: Optional[Image.Image] = None
-
-    # __post_init__에서 로드되던 데이터를 저장할 필드
-    # 초기화 시 입력받지 않으므로 default_factory=dict 로 설정 (혹은 exclude=True 사용 가능)
-    object_patterns: Dict[str, Any] = Field(default_factory=dict)
-
-    @model_validator(mode="after")
-    def load_patterns(self):
-        """기존 __post_init__의 역할을 수행합니다."""
+    def __post_init__(self):
+        # 패턴 파일 로드
         if os.path.exists(self.object_pattern_file):
             with open(self.object_pattern_file, "r") as json_file:
                 self.object_patterns = json.load(json_file)
-        return self
+        else:
+            # 파일이 없을 경우 빈 딕셔너리로 초기화 (에러 방지)
+            self.object_patterns = {}
+
+    def _process_obs_image(self, state_input) -> np.ndarray:
+        """
+        LazyFrames 또는 (1, H, W, C) 형태의 입력을 (H, W, C) 형태의 uint8 numpy array로 변환
+        """
+        # 1. LazyFrames -> Numpy 변환
+        img = np.array(state_input)
+
+        # 2. Tensor일 경우 처리 (혹시 모를 상황 대비)
+        if isinstance(img, torch.Tensor):
+            img = img.detach().cpu().numpy()
+
+        # 3. 차원 축소: (1, 240, 256, 3) -> (240, 256, 3)
+        # 첫 번째 차원이 1이면 제거 (Batch 차원 제거)
+        if img.ndim == 4 and img.shape[0] == 1:
+            img = img[0]
+
+        # 4. 정규화 확인 및 복원 (0~1 float -> 0~255 uint8)
+        if img.dtype != np.uint8:
+            if img.max() <= 1.5:  # 정규화된 데이터라고 가정
+                img = img * 255.0
+            img = img.astype(np.uint8)
+
+        return img
 
     def save_state_image(self, state):
-        state = torch.FloatTensor(state)[0]
-        state = state * 255.0
-        array_255 = state.numpy().astype(
-            np.uint8
-        )  # LeftTop to RightBottom; from (0,0,c) -> (-y, x, c)
+        # 전처리된 이미지 가져오기 (H, W, C) 형태의 RGB/BGR
+        array_255 = self._process_obs_image(state)
 
+        # array_255는 (240, 256, 3) 형태
         image = Image.fromarray(array_255)
 
         self.time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        # 디렉토리가 없으면 에러가 날 수 있으므로 체크/생성 로직이 있으면 좋습니다.
+
         os.makedirs("screenshot", exist_ok=True)
         image.save(f"screenshot/{self.time}.png")
 
     def find_objects_in_state(self, state, object_patterns):
-        found_objects = {}  # Dictionary to store found objects
+        found_objects = {}
 
-        # state to np.array
-        state = torch.FloatTensor(state)[0]
-        state = state * 255.0
-        big_image = state.numpy().astype(np.uint8)
+        # 1. 메인 이미지 전처리 (H, W, C)
+        big_image = self._process_obs_image(state)
 
-        # Pydantic 모델 내 메서드이므로 self.object_patterns 접근 가능하지만,
-        # 인자로 받은 object_patterns를 사용하는 기존 로직을 유지합니다.
+        # 이미지 크기 저장 (좌표 계산용)
+        img_height = big_image.shape[0]  # 240
 
+        # 2. 템플릿 매칭을 위해 Grayscale로 변환
         if big_image.ndim == 3:
-            big_image = cv2.cvtColor(big_image, cv2.COLOR_BGR2GRAY)  # (240, 256)
+            # Gym env는 보통 RGB로 나오므로 RGB2GRAY 사용 (OpenCV 기본은 BGR이지만 매칭에는 흑백 명도만 중요)
+            big_image_gray = cv2.cvtColor(big_image, cv2.COLOR_RGB2GRAY)
+        else:
+            big_image_gray = big_image
 
         for object_name, small_object in object_patterns.items():
+            # 키 매핑 로직
             if "question_block_" in object_name:
                 object_key = "1_question_block"
             elif "item_mushroom" in object_name:
@@ -103,59 +115,66 @@ class SuperMarioObs(BaseModel):
             else:
                 object_key = object_name
 
+            # 이미 찾은 블록 패스
             if (
                 "question_block_" in object_name
-                and "1_question_block" in found_objects.keys()
+                and "1_question_block" in found_objects
+                and len(found_objects["1_question_block"]) != 0
             ):
-                if len(found_objects["1_question_block"]) != 0:
-                    continue
+                continue
 
             if object_key not in found_objects:
                 found_objects[object_key] = []
 
-            # object to np.array
-            small_object = torch.FloatTensor(small_object)[0]
-            small_object = small_object * 255.0
-            small_object = np.array(small_object, dtype=np.uint8)
-            if small_object.ndim == 3 and small_object.shape[0] in [1, 3]:
-                small_object = np.transpose(
-                    small_object, (1, 2, 0)
-                )  # Convert to HWC if in CHW
+            # --- 템플릿(작은 오브젝트) 전처리 ---
+            small_object = np.array(small_object)
+            if isinstance(small_object, torch.Tensor):
+                small_object = small_object.numpy()
+
+            # 템플릿 정규화 복원
+            if small_object.max() <= 1.5:
+                small_object = small_object * 255.0
+            small_object = small_object.astype(np.uint8)
+
+            # 템플릿 차원 정리 (CHW -> HWC 변환 등)
             if small_object.ndim == 3:
-                small_object = cv2.cvtColor(small_object, cv2.COLOR_BGR2GRAY)
+                # (C, H, W) 형태인 경우 (H, W, C)로 변경
+                if small_object.shape[0] in [1, 3]:
+                    small_object = np.transpose(small_object, (1, 2, 0))
+                # 흑백 변환
+                small_object = cv2.cvtColor(small_object, cv2.COLOR_RGB2GRAY)
 
-            # Perform template matching
-            result = cv2.matchTemplate(big_image, small_object, cv2.TM_CCOEFF_NORMED)
+            # --- 매칭 수행 ---
+            result = cv2.matchTemplate(
+                big_image_gray, small_object, cv2.TM_CCOEFF_NORMED
+            )
 
-            # Check if the object is in the image
-            # thresholds 키가 없는 경우에 대한 예외 처리가 필요할 수 있습니다.
             threshold = self.thresholds.get(object_name, 0.8)
             locations = np.where(result >= threshold)
 
             for loc in zip(*locations[::-1]):  # Switch to (x, y)
-                loc = (loc[0], 240 - loc[1])  # Bottom-to-Top
-                # print(f"Object '{object_name}' found at location: {loc}")
+                # Bottom-to-Top 좌표계 변환 (이미지 높이 기준)
+                loc = (loc[0], img_height - loc[1])
                 found_objects[object_key].append(loc)
 
-        print("self.time: ", self.time)
-        print("found_objects: ", found_objects)
         return found_objects
 
     def to_text(self):
         observation = ""
 
-        # self.save_state_image(self.state['image'])
-        # Pydantic에서는 dict 접근 대신 self.state['image'] 그대로 사용 가능 (state가 dict이므로)
+        if not hasattr(self, "object_patterns") or not self.object_patterns:
+            return "Object patterns not loaded or empty."
+
         found_objects = self.find_objects_in_state(
             self.state["image"], self.object_patterns
         )
 
         # Mario loc
-        x_pos = min(128, self.info["x_pos"]) - 6  # 6: adjusting value
-        y_pos = self.info["y_pos"] - 34  # 34: adjusting value
+        x_pos = min(128, self.info.get("x_pos", 0)) - 6
+        y_pos = self.info.get("y_pos", 0) - 34
         observation += f"Position of Mario: ({x_pos}, {y_pos})\n"
 
-        # Object loc
+        # Object Mapping & Labeling (기존 로직 유지)
         object_transform = {
             "brick": lambda x, y: f"({x},{y+1})",
             "question_block": lambda x, y: f"({x-1},{y+1})",
@@ -184,10 +203,7 @@ class SuperMarioObs(BaseModel):
         }
 
         observation += "Positions of all objects\n"
-        for (
-            object_key,
-            loc_list,
-        ) in found_objects.items():  # object -> object_key (shadowing 방지)
+        for object_key, loc_list in found_objects.items():
             for key in object_transform:
                 if key in object_key:
                     if not loc_list:
@@ -208,8 +224,24 @@ class SuperMarioObs(BaseModel):
                     break
 
         observation += "(Note: All (x, y) positions refer to the top-left corner of each object.)\n"
-
         return observation
 
     def evaluate(self):
-        return int(self.reward["distance"]), self.reward["done"]
+        return int(self.reward.get("distance", 0)), self.reward.get("done", False)
+
+
+# 사용 방법 예시
+"""
+# state_next는 (1, 240, 256, 3) 형태의 LazyFrames 객체라고 가정
+# info는 Gym 환경에서 반환된 딕셔너리
+
+obs = SuperMarioObs(
+    state={"image": state_next},
+    image=state_next,
+    info=info,
+    reward={"distance": info.get("x_pos", 0), "done": done},
+)
+
+# 텍스트 관찰값 생성
+print(obs.to_text())
+"""

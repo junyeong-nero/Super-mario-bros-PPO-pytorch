@@ -18,8 +18,9 @@ from torch.distributions import Categorical
 # Set OMP threads before importing other heavy libraries if necessary
 os.environ["OMP_NUM_THREADS"] = "1"
 
-from src.env import ACTION_MAPPINGS, _unwrap_reset, create_mario_environment
+from src.env import ACTION_MAPPINGS, create_mario_environment
 from src.model import PPO
+from src.utils import *
 
 
 def get_args() -> argparse.Namespace:
@@ -195,7 +196,9 @@ def train(args: argparse.Namespace):
         print("Warning: Multiprocessing override enabled. Setting num_processes to 1.")
 
     actions_space = ACTION_MAPPINGS.get(args.action_type, ACTION_MAPPINGS["complex"])
-    env = create_mario_environment(args.world, args.stage, actions_space)
+    env = create_mario_environment(
+        args.world, args.stage, actions_space, output_path="training"
+    )
 
     num_states = env.observation_space.shape[0]
     num_actions = len(actions_space)
@@ -207,8 +210,8 @@ def train(args: argparse.Namespace):
     checkpoint_base = save_path / f"ppo_super_mario_bros_{args.world}_{args.stage}"
 
     # --- Training Loop ---
-    state_np, _ = _unwrap_reset(env.reset())
-    state = to_tensor(state_np, device)
+    state_np, _, _, _, _ = env.reset()
+    state = preprocess_image(state_np)
 
     total_steps = 0
     curr_episode = 0
@@ -245,7 +248,7 @@ def train(args: argparse.Namespace):
             state_np, reward, terminated, truncated, _ = env.step(action.item())
             done = terminated or truncated
 
-            state = to_tensor(state_np, device)
+            state = preprocess_image(state_np)
 
             rewards_buffer.append(
                 torch.tensor([reward], dtype=torch.float32, device=device)
@@ -257,8 +260,8 @@ def train(args: argparse.Namespace):
             total_steps += 1
 
             if done:
-                state_np, _ = _unwrap_reset(env.reset())
-                state = to_tensor(state_np, device)
+                state_np, _, _, _, _ = env.reset()
+                state = preprocess_image(state_np)
 
             if total_steps >= args.num_global_steps:
                 break
