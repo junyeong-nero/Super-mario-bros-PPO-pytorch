@@ -23,6 +23,8 @@ os.environ["OMP_NUM_THREADS"] = "1"
 from src.env import create_mario_environment, _unwrap_reset
 from src.env import ACTION_MAPPINGS
 from src.model import PPO
+from src.schema import SuperMarioObs
+from src.utils import to_pil_image, tensor_to_pil
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -142,6 +144,15 @@ def run_inference(args: argparse.Namespace):
             # Step Environment
             state_next, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
+
+            obs = SuperMarioObs(
+                state={"image": state_next},
+                image=tensor_to_pil(state_next),
+                info=info,
+                reward={"distance": info["x_pos"], "done": done},
+            )
+
+            print(info)
 
             # Render
             frame = env.render()
