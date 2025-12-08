@@ -73,7 +73,7 @@ class SkipFrame(Wrapper):
         for _ in range(self._skip):
             obs, reward, term, trunc, info = self.env.step(action)
             if self.monitor:
-                self.monitor.record(self.env)
+                self.monitor.record_frame_stack(obs)
 
             total_reward += reward
             last_obs = obs
@@ -157,14 +157,14 @@ class CustomReward(Wrapper):
             if action == 0:
                 state, reward, terminated, truncated, info = self.env.step(0)
                 if self.monitor:
-                    self.monitor.record(self.env)
+                    self.monitor.record_frame_stack(state)
 
             else:
                 # Execute jump/action sequence
                 for _ in range(action):
                     state, reward, terminated, truncated, info = self.env.step(1)
                     if self.monitor:
-                        self.monitor.record(self.env)
+                        self.monitor.record_frame_stack(state)
                     if terminated or truncated:
                         break
 
@@ -175,7 +175,7 @@ class CustomReward(Wrapper):
                     while on_air:
                         state, reward, term_step, trunc_step, info = self.env.step(0)
                         if self.monitor:
-                            self.monitor.record(self.env)
+                            self.monitor.record_frame_stack(state)
 
                         terminated = terminated or term_step
                         truncated = truncated or trunc_step
@@ -196,7 +196,7 @@ class CustomReward(Wrapper):
         else:
             state, reward, terminated, truncated, info = self.env.step(action)
             if self.monitor:
-                self.monitor.record(self.env)
+                self.monitor.record_frame_stack(state)
 
         # Processing State and Reward
         reward += (info["score"] - self.curr_score) / 40.0
@@ -260,4 +260,4 @@ def create_mario_environment(
     env = FrameStack(env, num_stack=1)
     env = CustomReward(env, world, stage, actions, monitor)
 
-    return env
+    return env, monitor

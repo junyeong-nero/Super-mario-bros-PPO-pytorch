@@ -196,8 +196,8 @@ def train(args: argparse.Namespace):
         print("Warning: Multiprocessing override enabled. Setting num_processes to 1.")
 
     actions_space = ACTION_MAPPINGS.get(args.action_type, ACTION_MAPPINGS["complex"])
-    env = create_mario_environment(
-        args.world, args.stage, actions_space, output_path="training"
+    env, monitor = create_mario_environment(
+        args.world, args.stage, actions_space, output_path="__cache__training"
     )
 
     num_states = env.observation_space.shape[0]

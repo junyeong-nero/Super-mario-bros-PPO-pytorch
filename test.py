@@ -115,7 +115,7 @@ def run_inference(args: argparse.Namespace):
 
     # Setup Environment
     actions = ACTION_MAPPINGS[args.action_type]
-    env = create_mario_environment(
+    env, monitor = create_mario_environment(
         args.world,
         args.stage,
         actions,
@@ -128,7 +128,6 @@ def run_inference(args: argparse.Namespace):
     )
 
     # Initial Reset
-    # Note: _unwrap_reset is technically private, consider exposing it publicly in src.env
     state_np, _, _, _, _ = env.reset()
     state = preprocess_image(state_np)
 
@@ -148,9 +147,7 @@ def run_inference(args: argparse.Namespace):
             state_next, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
             state_next_np = preprocess_image(state_next)
-            print("!!!!!!!!!!!", state_next_np.shape)  # 1, 1, 84, 84
 
-            print("state_next: ", type(state_next), state_next.shape)
             obs = SuperMarioObs(
                 state={"image": state_next},
                 image=state_next,
@@ -159,12 +156,6 @@ def run_inference(args: argparse.Namespace):
             )
 
             print(obs.to_text())
-
-            # # Persist human-readable description of the observation
-            # log_file.write(obs.to_text() + "\n\n")
-            # log_file.flush()
-
-            # print(info)
 
             # Handle Reset or Continue
             if done:
@@ -184,6 +175,7 @@ def run_inference(args: argparse.Namespace):
     except Exception as e:
         print(f"\nAn error occurred: {e}")
     finally:
+        monitor.close()
         log_file.close()
         cv2.destroyAllWindows()
         print("Resources released.")
