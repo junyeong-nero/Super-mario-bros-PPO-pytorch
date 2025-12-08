@@ -48,7 +48,7 @@ def get_args() -> argparse.Namespace:
         "--num_processes", type=int, default=1, help="Set to 1 for this implementation"
     )
     parser.add_argument(
-        "--save_interval", type=int, default=50, help="Steps between saves"
+        "--save_interval", type=int, default=256, help="Steps between saves"
     )
 
     # Paths
