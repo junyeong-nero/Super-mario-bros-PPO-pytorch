@@ -1,101 +1,184 @@
 """
-@author: Viet Nguyen <nhviet1009@gmail.com>
+Super Mario Bros PPO Inference Script
+Original Author: Viet Nguyen <nhviet1009@gmail.com>
+Refactored for clarity and performance.
 """
 
 import argparse
 import os
-
-os.environ["OMP_NUM_THREADS"] = "1"
+import sys
+from pathlib import Path
+from typing import Dict, List, Tuple
 
 import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
-from gym_super_mario_bros.actions import (
-    COMPLEX_MOVEMENT,
-    RIGHT_ONLY,
-    SIMPLE_MOVEMENT,
-)
+from gym.spaces import Space
 
-from src.env import create_train_env, _unwrap_reset
+# Limit OMP threads before importing libraries that might use them
+os.environ["OMP_NUM_THREADS"] = "1"
+
+# Local imports
+from src.env import create_mario_environment, _unwrap_reset, ACTION_MAPPINGS
 from src.model import PPO
 
 
-def get_args():
+# -----------------------------------------------------------------------------
+# Configuration
+# -----------------------------------------------------------------------------
+
+
+def get_args() -> argparse.Namespace:
+    """Parses command line arguments."""
     parser = argparse.ArgumentParser(
-        description=(
-            "Implementation of model described in the paper: "
-            "Proximal Policy Optimization Algorithms for Contra Nes"
-        )
+        description="PPO Inference for Super Mario Bros (NES)"
     )
-    parser.add_argument("--world", type=int, default=1)
-    parser.add_argument("--stage", type=int, default=1)
-    parser.add_argument("--action_type", type=str, default="simple")
-    parser.add_argument("--saved_path", type=str, default="trained_models")
-    parser.add_argument("--output_path", type=str, default="output")
-    args = parser.parse_args()
-    return args
-
-
-JUMP_ONLY = [["right"], ["right", "A"]]
-
-ACTION_MAPPINGS = {
-    "jump": JUMP_ONLY,
-    "right": RIGHT_ONLY,
-    "simple": SIMPLE_MOVEMENT,
-    "complex": COMPLEX_MOVEMENT,
-}
-
-
-def test(opt):
-    use_cuda = torch.cuda.is_available()
-    actions = ACTION_MAPPINGS.get(opt.action_type, COMPLEX_MOVEMENT)
-    video_path = f"{opt.output_path}/video_{opt.world}_{opt.stage}.mp4"
-    model_path = f"{opt.saved_path}/ppo_super_mario_bros_{opt.world}_{opt.stage}"
-    env = create_train_env(
-        opt.world,
-        opt.stage,
-        actions,
-        video_path,
+    parser.add_argument("--world", type=int, default=1, help="World number (1-8)")
+    parser.add_argument("--stage", type=int, default=1, help="Stage number (1-4)")
+    parser.add_argument("--skip_frame", type=int, default=4, help="Skip Frame")
+    parser.add_argument(
+        "--action_type",
+        type=str,
+        default="simple",
+        choices=ACTION_MAPPINGS.keys(),
+        help="Action space complexity",
     )
-    model = PPO(env.observation_space.shape[0], len(actions))
-    if use_cuda:
-        model.load_state_dict(torch.load(model_path))
-        model.cuda()
-    else:
+    parser.add_argument(
+        "--saved_path",
+        type=str,
+        default="trained_models",
+        help="Directory containing trained models",
+    )
+    parser.add_argument(
+        "--output_path",
+        type=str,
+        default="output",
+        help="Directory to save video output",
+    )
+    return parser.parse_args()
+
+
+# -----------------------------------------------------------------------------
+# Helper Functions
+# -----------------------------------------------------------------------------
+
+
+def load_model(
+    model_path: Path, input_dim: int, output_dim: int, device: torch.device
+) -> PPO:
+    """Initializes the PPO model and loads weights."""
+    model = PPO(input_dim, output_dim)
+
+    if not model_path.exists():
+        print(f"Error: Model file not found at {model_path}")
+        sys.exit(1)
+
+    print(f"Loading model from: {model_path}")
+    if device.type == "cpu":
         model.load_state_dict(torch.load(model_path, map_location="cpu"))
+    else:
+        model.load_state_dict(torch.load(model_path))
+        model.to(device)
+
     model.eval()
+    return model
+
+
+def process_state(state: np.ndarray, device: torch.device) -> torch.Tensor:
+    """Converts a numpy state to a torch tensor on the correct device."""
+    state_tensor = torch.from_numpy(np.asarray(state, dtype=np.float32))
+    return state_tensor.to(device)
+
+
+# -----------------------------------------------------------------------------
+# Main Logic
+# -----------------------------------------------------------------------------
+
+
+def run_inference(args: argparse.Namespace):
+    """Main loop for running the environment with the trained model."""
+
+    # Setup paths
+    saved_path = Path(args.saved_path)
+    output_path = Path(args.output_path)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    video_filename = output_path / f"video_{args.world}_{args.stage}.mp4"
+    model_filename = saved_path / f"ppo_super_mario_bros_{args.world}_{args.stage}"
+
+    # Setup Device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Running on device: {device}")
+
+    # Setup Environment
+    actions = ACTION_MAPPINGS[args.action_type]
+    env = create_mario_environment(
+        args.world,
+        args.stage,
+        actions,
+        args.skip_frame,
+        str(video_filename),  # Env likely expects string, not Path object
+    )
+
+    # Load Model
+    model = load_model(
+        model_filename, env.observation_space.shape[0], len(actions), device
+    )
+
+    # Initial Reset
+    # Note: _unwrap_reset is technically private, consider exposing it publicly in src.env
     state_np, _ = _unwrap_reset(env.reset())
-    state = torch.from_numpy(np.asarray(state_np))
-    while True:
-        if use_cuda:
-            state = state.cuda()
-        logits, value = model(state)
-        policy = F.softmax(logits, dim=1)
-        action = torch.argmax(policy).item()
-        state, reward, terminated, truncated, info = env.step(action)
-        if terminated or truncated:
-            state_np, _ = _unwrap_reset(env.reset())
-            state = torch.from_numpy(np.asarray(state_np, dtype=np.float32))
-            continue
-        done = terminated or truncated
-        state = torch.from_numpy(np.asarray(state, dtype=np.float32))
-        frame = env.render()
-        # If we get raw frames (rgb_array), show them via OpenCV so gameplay
-        # is visible.
-        if isinstance(frame, np.ndarray):
-            cv2.imshow("Mario", cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-            if cv2.waitKey(1) & 0xFF == ord("q"):
+    state = process_state(state_np, device)
+
+    print("Starting inference... Press 'q' to quit.")
+
+    try:
+        while True:
+            # Use no_grad for inference to reduce memory usage and increase speed
+            with torch.no_grad():
+                logits, _ = model(state)
+                policy = F.softmax(logits, dim=1)
+                action = torch.argmax(policy).item()
+
+            # Step Environment
+            state_next, reward, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
+
+            # Render
+            frame = env.render()
+            if isinstance(frame, np.ndarray):
+                # Convert RGB (Gym) to BGR (OpenCV)
+                cv2.imshow(
+                    "Super Mario Bros PPO", cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                )
+
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    print("Quitting...")
+                    break
+
+            # Handle Reset or Continue
+            if done:
+                print("Episode finished. Resetting...")
+                state_np, _ = _unwrap_reset(env.reset())
+                state = process_state(state_np, device)
+            else:
+                state = process_state(state_next, device)
+
+            # Check for Stage Completion flags
+            if info.get("flag_get"):
+                print(f"World {args.world} Stage {args.stage} Completed!")
                 break
-        else:
-            # Fallback for environments that handle their own rendering.
-            _ = frame
-        if info["flag_get"]:
-            print(f"World {opt.world} stage {opt.stage} completed")
-            break
-    cv2.destroyAllWindows()
+
+    except KeyboardInterrupt:
+        print("\nStopped by user.")
+    except Exception as e:
+        print(f"\nAn error occurred: {e}")
+    finally:
+        cv2.destroyAllWindows()
+        print("Resources released.")
 
 
 if __name__ == "__main__":
     opt = get_args()
-    test(opt)
+    run_inference(opt)

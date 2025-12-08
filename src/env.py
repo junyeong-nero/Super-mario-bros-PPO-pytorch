@@ -1,22 +1,28 @@
 """
 @author: Viet Nguyen <nhviet1009@gmail.com>
+@refactor: Beautified and Modernized
 """
 
-import cv2
-import numpy as np
 import subprocess as sp
+from typing import Any, List, Tuple, Dict, Optional, Union
+import multiprocessing as mp
 
-# NumPy 2.0 removed the bool8 alias that old Gym still references.
+import cv2
+import gym
+import numpy as np
+import gym_super_mario_bros
+from gym import Wrapper
+from gym.spaces import Box
+from gym.wrappers import FrameStack, TransformObservation
+from gym_super_mario_bros.actions import SIMPLE_MOVEMENT, COMPLEX_MOVEMENT, RIGHT_ONLY
+from nes_py.wrappers import JoypadSpace
+
+# --- NumPy 2.0 Compatibility Patch ---
 if not hasattr(np, "bool8"):
     np.bool8 = np.bool_
 
-import gym
-from gym import Wrapper as GymWrapper
-from gym.spaces import Box
-from gym.wrappers import FrameStack, GrayScaleObservation, TransformObservation
-
-import gym_super_mario_bros
-from gym_super_mario_bros.actions import SIMPLE_MOVEMENT, COMPLEX_MOVEMENT, RIGHT_ONLY
+# --- Constants ---
+TARGET_SHAPE = (84, 84)
 
 JUMP_ONLY = [
     ["right"],
@@ -28,36 +34,61 @@ JUMP_ONLY = [
     ["right", "A", "A", "A", "A", "A", "A"],
 ]
 
-from nes_py.wrappers import JoypadSpace
-import torch.multiprocessing as mp
+ACTION_MAPPINGS = {
+    "jump": JUMP_ONLY,
+    "right": RIGHT_ONLY,
+    "simple": SIMPLE_MOVEMENT,
+    "complex": COMPLEX_MOVEMENT,
+}
 
 
-class SkipFrame(GymWrapper):
-    """Repeat the same action for `skip` frames and accumulate rewards."""
+# --- Utility Functions ---
 
-    def __init__(self, env, skip):
-        super().__init__(env)
-        self._skip = skip
 
-    def step(self, action):
-        total_reward = 0.0
-        last_obs, info = None, {}
-        terminated = False
-        truncated = False
-        for _ in range(self._skip):
-            obs, reward, term, trunc, info = _unwrap_step(self.env.step(action))
-            total_reward += reward
-            last_obs = obs
-            terminated = term or terminated
-            truncated = trunc or truncated
-            if terminated or truncated:
-                break
-        return last_obs, total_reward, terminated, truncated, info
+def process_frame(frame: Optional[np.ndarray]) -> np.ndarray:
+    """Converts a frame to grayscale, resizes it, and normalizes pixel values."""
+    if frame is not None:
+        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+        frame = cv2.resize(frame, TARGET_SHAPE)[None, :, :] / 255.0
+        return frame.astype(np.float32)
+    return np.zeros((1, *TARGET_SHAPE), dtype=np.float32)
+
+
+def normalize_observation(observation: np.ndarray) -> np.ndarray:
+    """Scale observation to [0, 1] for TransformObservation."""
+    return (observation / 255.0).astype(np.float32)
+
+
+def _to_numpy(obs: Any) -> np.ndarray:
+    """Ensure observation is a NumPy array (handles LazyFrames)."""
+    if isinstance(obs, np.ndarray):
+        return obs.astype(np.float32, copy=False)
+    return np.asarray(obs, dtype=np.float32)
+
+
+def _unwrap_reset(result: Any) -> Tuple[Any, Dict]:
+    """Normalize reset outputs across Gym / Gymnasium API versions."""
+    if isinstance(result, tuple) and len(result) == 2:
+        return result
+    return result, {}
+
+
+def _unwrap_step(result: Any) -> Tuple[Any, float, bool, bool, Dict]:
+    """Normalize step outputs to (state, reward, terminated, truncated, info)."""
+    if len(result) == 5:
+        return result
+    # Legacy 4-tuple: (state, reward, done, info)
+    state, reward, done, info = result
+    return state, reward, done, False, info
+
+
+# --- Wrappers and Classes ---
 
 
 class Monitor:
-    def __init__(self, width, height, saved_path):
+    """Records the environment using ffmpeg."""
 
+    def __init__(self, width: int, height: int, saved_path: str):
         self.command = [
             "ffmpeg",
             "-y",
@@ -66,7 +97,7 @@ class Monitor:
             "-vcodec",
             "rawvideo",
             "-s",
-            "{}X{}".format(width, height),
+            f"{width}X{height}",
             "-pix_fmt",
             "rgb24",
             "-r",
@@ -81,134 +112,179 @@ class Monitor:
         try:
             self.pipe = sp.Popen(self.command, stdin=sp.PIPE, stderr=sp.PIPE)
         except FileNotFoundError:
+            print("Error: ffmpeg not found. Video recording disabled.")
             self.pipe = None
 
-    def record(self, image_array):
+    def record(self, image_array: np.ndarray) -> None:
         if self.pipe is not None:
             self.pipe.stdin.write(image_array.tobytes())
 
 
-def process_frame(frame):
-    if frame is not None:
-        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-        frame = cv2.resize(frame, (84, 84))[None, :, :] / 255.0
-        return frame.astype(np.float32)
-    else:
-        return np.zeros((1, 84, 84), dtype=np.float32)
+class SkipFrame(Wrapper):
+    """Repeat the same action for `skip` frames and accumulate rewards."""
+
+    def __init__(self, env: gym.Env, skip: int):
+        super().__init__(env)
+        self._skip = skip
+
+    def step(self, action: int):
+        total_reward = 0.0
+        last_obs, info = None, {}
+        terminated = False
+        truncated = False
+
+        for _ in range(self._skip):
+            obs, reward, term, trunc, info = _unwrap_step(self.env.step(action))
+            total_reward += reward
+            last_obs = obs
+            terminated = term or terminated
+            truncated = trunc or truncated
+            if terminated or truncated:
+                break
+
+        return last_obs, total_reward, terminated, truncated, info
 
 
-def _unwrap_reset(result):
-    """Normalize reset outputs across Gym / Gymnasium API versions."""
-    if isinstance(result, tuple) and len(result) == 2:
-        return result
-    return result, {}
+class CustomReward(Wrapper):
+    """
+    Custom wrapper to handle specialized reward logic, rendering,
+    and specific penalties for World 7-4 and 4-4.
+    """
 
-
-def _unwrap_step(result):
-    """Normalize step outputs to (state, reward, terminated, truncated, info)."""
-    if len(result) == 5:
-        return result
-    # Legacy 4-tuple: (state, reward, done, info)
-    state, reward, done, info = result
-    return state, reward, done, False, info
-
-
-def normalize_observation(observation):
-    """Scale observation to [0, 1] for TransformObservation (pickle-safe)."""
-    return (observation / 255.0).astype(np.float32)
-
-
-def _to_numpy(obs):
-    """Ensure observation is a NumPy array (handles LazyFrames)."""
-    if isinstance(obs, np.ndarray):
-        return obs.astype(np.float32, copy=False)
-    return np.asarray(obs, dtype=np.float32)
-
-
-class CustomReward(GymWrapper):
-    def __init__(self, env=None, world=None, stage=None, monitor=None):
-        super(CustomReward, self).__init__(env)
-        self.observation_space = Box(low=0, high=255, shape=(1, 84, 84))
+    def __init__(
+        self,
+        env: gym.Env,
+        world: int,
+        stage: int,
+        actions: List[str],
+        monitor: Optional[Monitor] = None,
+    ):
+        super().__init__(env)
+        self.observation_space = Box(low=0, high=255, shape=(1, *TARGET_SHAPE))
         self.curr_score = 0
         self.current_x = 40
         self.world = world
         self.stage = stage
-        if monitor:
-            self.monitor = monitor
-        else:
-            self.monitor = None
+        self.actions = actions
+        self.is_jump_only = actions == JUMP_ONLY
+        self.monitor = monitor
 
-    def step(self, action):
-        # TODO implementation n_jumps
-        # state, reward, terminated, truncated, info = _unwrap_step(self.env.step(action))
-        # print(action)
+    def _apply_level_constraints(self, x_pos: int, y_pos: int) -> Tuple[float, bool]:
+        """Checks specific coordinates for worlds 7-4 and 4-4 to apply penalties."""
+        penalty = 0.0
+        force_done = False
 
-        state, reward, terminated, truncated, info = None, None, None, None, None
-        if action == 0:
-            state, reward, terminated, truncated, info = _unwrap_step(
-                self.env.step(action=0)
-            )
-        else:
-            for _ in range(action):
+        # Logic for World 7-4
+        if self.world == 7 and self.stage == 4:
+            if (
+                (506 <= x_pos <= 832 and y_pos > 127)
+                or (832 < x_pos <= 1064 and y_pos < 80)
+                or (1113 < x_pos <= 1464 and y_pos < 191)
+                or (1579 < x_pos <= 1943 and y_pos < 191)
+                or (1946 < x_pos <= 1964 and y_pos >= 191)
+                or (1984 < x_pos <= 2060 and (y_pos >= 191 or y_pos < 127))
+                or (2114 < x_pos < 2440 and y_pos < 191)
+                or x_pos < self.current_x - 500
+            ):
+                penalty = -50.0
+                force_done = True
+
+        # Logic for World 4-4
+        if self.world == 4 and self.stage == 4:
+            if (x_pos <= 1500 and y_pos < 127) or (
+                1588 <= x_pos < 2380 and y_pos >= 127
+            ):
+                penalty = -50.0
+                force_done = True
+
+        return penalty, force_done
+
+    def step(self, action: int):
+        state, reward, terminated, truncated, info = None, 0.0, False, False, {}
+
+        if self.is_jump_only:
+
+            # JUMP_ONLY handles jump levels (0 ~ 6)
+            # - Level 0: +0 in x, +0 in y (No jump, just walk)
+            # - Level 1: +42 in x, +35 in y
+            # - Level 2: +56 in x, +46 in y
+            # - Level 3: +63 in x, +53 in y
+            # - Level 4: +70 in x, +60 in y
+            # - Level 5: +77 in x, +65 in y
+            # - Level 6: +84 in x, +68 in y
+
+            if action == 0:
                 state, reward, terminated, truncated, info = _unwrap_step(
-                    self.env.step(action=1)
+                    self.env.step(0)
                 )
-                if terminated:
-                    break
+            else:
+                # Execute jump/action sequence
+                for _ in range(action):
+                    state, reward, terminated, truncated, info = _unwrap_step(
+                        self.env.step(1)
+                    )
+                    if terminated or truncated:
+                        break
 
-            on_air = True
-            mario_y_history = []
-            while on_air and not terminated:
-                state, reward, terminated, truncated, info = self.env.step(action=0)
-                if terminated:
-                    break
+                # Handle "On Air" logic
+                if not (terminated or truncated):
+                    on_air = True
+                    mario_y_history = []
+                    while on_air:
+                        state, reward, term_step, trunc_step, info = _unwrap_step(
+                            self.env.step(0)
+                        )
+                        terminated = terminated or term_step
+                        truncated = truncated or trunc_step
 
-                mario_y_history.append(info["y_pos"])
-                if len(mario_y_history) >= 3:
-                    if (
-                        mario_y_history[-3] == mario_y_history[-2]
-                        and mario_y_history[-2] == mario_y_history[-1]
-                    ):
-                        on_air = False
+                        if terminated or truncated:
+                            break
 
+                        mario_y_history.append(info["y_pos"])
+                        # Check if Mario has been at the same Y height for 3 frames (landed)
+                        if len(mario_y_history) >= 3:
+                            if (
+                                mario_y_history[-3]
+                                == mario_y_history[-2]
+                                == mario_y_history[-1]
+                            ):
+                                on_air = False
+        else:
+
+            # other actions use their own action spaces normarly
+            state, reward, terminated, truncated, info = _unwrap_step(
+                self.env.step(action)
+            )
+
+        # Rendering and Recording
         self.env.render()
-        done = terminated or truncated
         if self.monitor:
             self.monitor.record(state)
-        state = process_frame(state)
+
+        # Processing State and Reward
+        processed_state = process_frame(state)
         reward += (info["score"] - self.curr_score) / 40.0
         self.curr_score = info["score"]
+
+        done = terminated or truncated
         if done:
             if info["flag_get"]:
                 reward += 50
             else:
                 reward -= 50
-        if self.world == 7 and self.stage == 4:
-            if (
-                (506 <= info["x_pos"] <= 832 and info["y_pos"] > 127)
-                or (832 < info["x_pos"] <= 1064 and info["y_pos"] < 80)
-                or (1113 < info["x_pos"] <= 1464 and info["y_pos"] < 191)
-                or (1579 < info["x_pos"] <= 1943 and info["y_pos"] < 191)
-                or (1946 < info["x_pos"] <= 1964 and info["y_pos"] >= 191)
-                or (
-                    1984 < info["x_pos"] <= 2060
-                    and (info["y_pos"] >= 191 or info["y_pos"] < 127)
-                )
-                or (2114 < info["x_pos"] < 2440 and info["y_pos"] < 191)
-                or info["x_pos"] < self.current_x - 500
-            ):
-                reward -= 50
-                done = True
-        if self.world == 4 and self.stage == 4:
-            if (info["x_pos"] <= 1500 and info["y_pos"] < 127) or (
-                1588 <= info["x_pos"] < 2380 and info["y_pos"] >= 127
-            ):
-                reward = -50
-                done = True
+
+        # Apply specific level penalties
+        penalty, force_done = self._apply_level_constraints(
+            info["x_pos"], info["y_pos"]
+        )
+        reward += penalty
+        if force_done:
+            done = True
+            terminated = True
 
         self.current_x = info["x_pos"]
-        terminated = done or terminated
-        return state, reward / 10.0, terminated, truncated, info
+
+        return processed_state, reward / 10.0, terminated, truncated, info
 
     def reset(self):
         self.curr_score = 0
@@ -217,113 +293,30 @@ class CustomReward(GymWrapper):
         return process_frame(obs), info
 
 
-class CustomSkipFrame(GymWrapper):
-    def __init__(self, env, skip=4):
-        super(CustomSkipFrame, self).__init__(env)
-        self.observation_space = Box(low=0, high=255, shape=(skip, 84, 84))
-        self.skip = skip
-        self.states = np.zeros((skip, 84, 84), dtype=np.float32)
-
-    def step(self, action):
-        total_reward = 0
-        last_states = []
-        for i in range(self.skip):
-            state, reward, terminated, truncated, info = _unwrap_step(
-                self.env.step(action)
-            )
-            done = terminated or truncated
-            total_reward += reward
-            if i >= self.skip / 2:
-                last_states.append(state)
-            if done:
-                self.reset()
-                terminated = done
-                return (
-                    self.states[None, :, :, :].astype(np.float32),
-                    total_reward,
-                    terminated,
-                    truncated,
-                    info,
-                )
-        max_state = np.max(np.concatenate(last_states, 0), 0)
-        self.states[:-1] = self.states[1:]
-        self.states[-1] = max_state
-        return (
-            self.states[None, :, :, :].astype(np.float32),
-            total_reward,
-            False,
-            False,
-            info,
-        )
-
-    def reset(self):
-        state, info = _unwrap_reset(self.env.reset())
-        self.states = np.concatenate([state for _ in range(self.skip)], 0)
-        return self.states[None, :, :, :].astype(np.float32), info
+# --- Environment Factories ---
 
 
-def create_train_env(world, stage, actions, output_path=None, render_mode="human"):
+def create_mario_environment(
+    world: int,
+    stage: int,
+    actions: List[List[str]],
+    skip_frame: int = 4,
+    output_path: Optional[str] = None,
+    render_mode: str = "human",
+) -> gym.Env:
+    """Creates and wraps the training environment."""
     env = gym_super_mario_bros.make(
-        "SuperMarioBros-{}-{}-v1".format(world, stage),
+        f"SuperMarioBros-{world}-{stage}-v1",
         apply_api_compatibility=True,
         render_mode=render_mode,
     )
-    if output_path:
-        monitor = Monitor(256, 240, output_path)
-    else:
-        monitor = None
+
+    monitor = Monitor(256, 240, output_path) if output_path else None
 
     env = JoypadSpace(env, actions)
-    env = SkipFrame(env, skip=4)
-    env = CustomReward(env, world, stage, monitor)
+    env = CustomReward(env, world, stage, actions, monitor)
+    env = SkipFrame(env, skip=skip_frame)
     env = TransformObservation(env, f=normalize_observation)
     env = FrameStack(env, num_stack=1)
 
-    # origianl environments
-    # env = JoypadSpace(env, actions)
-    # env = GymToGymnasiumAdapter(env)
-    # env = CustomReward(env, world, stage, monitor)
-    # env = CustomSkipFrame(env)
     return env
-
-
-ACTION_MAPPINGS = {
-    "jump": JUMP_ONLY,
-    "right": RIGHT_ONLY,
-    "simple": SIMPLE_MOVEMENT,
-    "complex": COMPLEX_MOVEMENT,
-}
-
-
-class MultipleEnvironments:
-    def __init__(self, world, stage, action_type, num_envs, output_path=None):
-        self.agent_conns, self.env_conns = zip(*[mp.Pipe() for _ in range(num_envs)])
-        actions = ACTION_MAPPINGS.get(action_type, COMPLEX_MOVEMENT)
-        self.envs = [
-            create_train_env(world, stage, actions, output_path=output_path)
-            for _ in range(num_envs)
-        ]
-        self.num_states = self.envs[0].observation_space.shape[0]
-        self.num_actions = len(actions)
-        for index in range(num_envs):
-            process = mp.Process(target=self.run, args=(index,))
-            process.start()
-            self.env_conns[index].close()
-
-    def run(self, index):
-        self.agent_conns[index].close()
-        while True:
-            request, action = self.env_conns[index].recv()
-            if request == "step":
-                state, reward, terminated, truncated, info = self.envs[index].step(
-                    action.item()
-                )
-                state = _to_numpy(state)
-                done = terminated or truncated
-                self.env_conns[index].send((state, reward, done, info))
-            elif request == "reset":
-                obs, _ = _unwrap_reset(self.envs[index].reset())
-                obs = _to_numpy(obs)
-                self.env_conns[index].send(obs)
-            else:
-                raise NotImplementedError
