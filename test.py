@@ -14,13 +14,13 @@ import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
-from gym.spaces import Space
+from gym_super_mario_bros.actions import (
+    COMPLEX_MOVEMENT,
+    RIGHT_ONLY,
+    SIMPLE_MOVEMENT,
+)
 
-# Limit OMP threads before importing libraries that might use them
-os.environ["OMP_NUM_THREADS"] = "1"
-
-# Local imports
-from src.env import create_mario_environment, _unwrap_reset, ACTION_MAPPINGS
+from src.env import create_train_env, _unwrap_reset
 from src.model import PPO
 
 
@@ -32,50 +32,46 @@ from src.model import PPO
 def get_args() -> argparse.Namespace:
     """Parses command line arguments."""
     parser = argparse.ArgumentParser(
-        description="PPO Inference for Super Mario Bros (NES)"
+        description=(
+            "Implementation of model described in the paper: "
+            "Proximal Policy Optimization Algorithms for Contra Nes"
+        )
     )
-    parser.add_argument("--world", type=int, default=1, help="World number (1-8)")
-    parser.add_argument("--stage", type=int, default=1, help="Stage number (1-4)")
-    parser.add_argument("--skip_frame", type=int, default=4, help="Skip Frame")
-    parser.add_argument(
-        "--action_type",
-        type=str,
-        default="simple",
-        choices=ACTION_MAPPINGS.keys(),
-        help="Action space complexity",
+    parser.add_argument("--world", type=int, default=1)
+    parser.add_argument("--stage", type=int, default=1)
+    parser.add_argument("--action_type", type=str, default="simple")
+    parser.add_argument("--saved_path", type=str, default="trained_models")
+    parser.add_argument("--output_path", type=str, default="output")
+    args = parser.parse_args()
+    return args
+
+
+JUMP_ONLY = [["right"], ["right", "A"]]
+
+ACTION_MAPPINGS = {
+    "jump": JUMP_ONLY,
+    "right": RIGHT_ONLY,
+    "simple": SIMPLE_MOVEMENT,
+    "complex": COMPLEX_MOVEMENT,
+}
+
+
+def test(opt):
+    use_cuda = torch.cuda.is_available()
+    actions = ACTION_MAPPINGS.get(opt.action_type, COMPLEX_MOVEMENT)
+    video_path = f"{opt.output_path}/video_{opt.world}_{opt.stage}.mp4"
+    model_path = f"{opt.saved_path}/ppo_super_mario_bros_{opt.world}_{opt.stage}"
+    env = create_train_env(
+        opt.world,
+        opt.stage,
+        actions,
+        video_path,
     )
-    parser.add_argument(
-        "--saved_path",
-        type=str,
-        default="trained_models",
-        help="Directory containing trained models",
-    )
-    parser.add_argument(
-        "--output_path",
-        type=str,
-        default="output",
-        help="Directory to save video output",
-    )
-    return parser.parse_args()
-
-
-# -----------------------------------------------------------------------------
-# Helper Functions
-# -----------------------------------------------------------------------------
-
-
-def load_model(
-    model_path: Path, input_dim: int, output_dim: int, device: torch.device
-) -> PPO:
-    """Initializes the PPO model and loads weights."""
-    model = PPO(input_dim, output_dim)
-
-    if not model_path.exists():
-        print(f"Error: Model file not found at {model_path}")
-        sys.exit(1)
-
-    print(f"Loading model from: {model_path}")
-    if device.type == "cpu":
+    model = PPO(env.observation_space.shape[0], len(actions))
+    if use_cuda:
+        model.load_state_dict(torch.load(model_path))
+        model.cuda()
+    else:
         model.load_state_dict(torch.load(model_path, map_location="cpu"))
     else:
         model.load_state_dict(torch.load(model_path))
