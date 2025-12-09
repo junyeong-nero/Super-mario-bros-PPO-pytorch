@@ -187,7 +187,12 @@ def run_inference(args: argparse.Namespace):
     log_filename = output_path / f"obs_{args.world}_{args.stage}.txt"
 
     # Setup Device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
     print(f"Running on device: {device}")
 
     # Setup Environment
@@ -217,7 +222,7 @@ def run_inference(args: argparse.Namespace):
         while True:
             # Use no_grad for inference to reduce memory usage and increase speed
             with torch.no_grad():
-                logits, _ = model(preprocess_image(state))
+                logits, _ = model(preprocess_image(state, device))
                 policy = F.softmax(logits, dim=1)
                 action = torch.argmax(policy).item()
 

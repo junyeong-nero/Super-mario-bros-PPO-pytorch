@@ -174,13 +174,20 @@ def update_policy(
 
 def train(args: argparse.Namespace):
     # --- Setup ---
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
     print(f"Using device: {device}")
 
     # Seeding
     torch.manual_seed(123)
     if device.type == "cuda":
         torch.cuda.manual_seed(123)
+    elif device.type == "mps":
+        torch.mps.manual_seed(123)
 
     # File Setup
     log_path = Path(args.log_path)
@@ -211,7 +218,7 @@ def train(args: argparse.Namespace):
 
     # --- Training Loop ---
     state_np, _, _, _, _ = env.reset()
-    state = preprocess_image(state_np)
+    state = preprocess_image(state_np, device)
 
     total_steps = 0
     curr_episode = 0
@@ -248,7 +255,7 @@ def train(args: argparse.Namespace):
             state_np, reward, terminated, truncated, _ = env.step(action.item())
             done = terminated or truncated
 
-            state = preprocess_image(state_np)
+            state = preprocess_image(state_np, device)
 
             rewards_buffer.append(
                 torch.tensor([reward], dtype=torch.float32, device=device)
@@ -261,7 +268,7 @@ def train(args: argparse.Namespace):
 
             if done:
                 state_np, _, _, _, _ = env.reset()
-                state = preprocess_image(state_np)
+                state = preprocess_image(state_np, device)
 
             if total_steps >= args.num_global_steps:
                 break

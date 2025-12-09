@@ -57,7 +57,7 @@ def to_pil_image(image: InputImageType) -> Image.Image:
     raise TypeError(f"Unsupported image type: {type(image)}")
 
 
-def preprocess_image(img: InputImageType) -> torch.Tensor:
+def preprocess_image(img: InputImageType, device: torch.device = None) -> torch.Tensor:
     """
     Preprocesses an image for the network:
     1. Converts to PIL Image.
@@ -68,6 +68,7 @@ def preprocess_image(img: InputImageType) -> torch.Tensor:
 
     Args:
         img: Input image (PIL, LazyFrame, or Numpy).
+        device: Target device for the tensor (cpu, cuda, mps).
 
     Returns:
         torch.Tensor: Preprocessed tensor with shape (1, 1, 84, 84).
@@ -85,4 +86,10 @@ def preprocess_image(img: InputImageType) -> torch.Tensor:
     tensor = torch.from_numpy(arr)
 
     # Add Batch and Channel dimensions: (H, W) -> (1, 1, H, W)
-    return tensor.unsqueeze(0).unsqueeze(0)
+    tensor = tensor.unsqueeze(0).unsqueeze(0)
+
+    # Move to device if specified
+    if device is not None:
+        tensor = tensor.to(device)
+
+    return tensor
