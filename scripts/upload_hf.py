@@ -67,6 +67,28 @@ def collect_records(log_dir: Path) -> List[Dict[str, Any]]:
     return records
 
 
+def deduplicate_records(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Removes rows with identical observation dictionaries while preserving order."""
+    deduped: List[Dict[str, Any]] = []
+    seen_keys = set()
+
+    for record in records:
+        objects_key = json.dumps(
+            record.get("objects"),
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+
+        if objects_key in seen_keys:
+            continue
+
+        seen_keys.add(objects_key)
+        deduped.append(record)
+
+    return deduped
+
+
 def build_dataset(records: List[Dict[str, Any]]) -> Dataset:
     return Dataset.from_list(records)
 
@@ -125,9 +147,17 @@ def main():
     print(f"Using log directory: {log_dir}")
 
     records = collect_records(log_dir)
+    total_records = len(records)
     print(
-        f"Collected {len(records)} records from {len(list(log_dir.glob('*.json')))} files."
+        f"Collected {total_records} records from {len(list(log_dir.glob('*.json')))} files."
     )
+
+    records = deduplicate_records(records)
+    deduped_records = len(records)
+    if deduped_records != total_records:
+        print(
+            f"Deduplicated records by observation dictionary: {deduped_records} remaining."
+        )
 
     dataset = build_dataset(records)
 
@@ -138,6 +168,7 @@ def main():
                 "Hugging Face token not provided. Use --hf_token or set HF_TOKEN."
             )
         print(f"Pushing dataset to hub: {args.repo_id} (private={args.private})")
+        print(dataset)
         push_dataset(dataset, args.repo_id, token, args.private)
         print("Upload complete.")
     else:
