@@ -17,8 +17,11 @@ from datasets import Dataset
 
 
 def load_json(path: Path) -> Dict[str, Any]:
-    with path.open("r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {}
 
 
 def find_log_dir(base: Path, world: int, stage: int) -> Path:

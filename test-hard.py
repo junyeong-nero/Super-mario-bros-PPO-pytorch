@@ -180,12 +180,7 @@ def run_inference(args: argparse.Namespace):
 
     # Setup Environment
     actions = ACTION_MAPPINGS[args.action_type]
-    env, monitor = create_mario_environment(
-        args.world,
-        args.stage,
-        actions,
-        str(video_filename),  # Env likely expects string, not Path object
-    )
+    env, monitor = create_mario_environment(args.world, args.stage, actions)
 
     # Load Model
     model = load_model(
@@ -255,7 +250,8 @@ def run_inference(args: argparse.Namespace):
     except Exception as e:
         print(f"\nAn error occurred: {e}")
     finally:
-        monitor.close()
+        if monitor:
+            monitor.close()
         if logging_enabled and history:
             log_path = save_logging_history(history, args, Path(args.log_dir))
             print(f"Saved log to: {log_path}")
