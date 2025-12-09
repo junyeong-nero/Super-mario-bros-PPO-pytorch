@@ -7,7 +7,9 @@ import subprocess as sp
 from typing import Any, List, Tuple, Dict, Optional, Union
 import multiprocessing as mp
 
+import random
 import cv2
+
 import gym
 import numpy as np
 import gym_super_mario_bros
@@ -228,7 +230,7 @@ class CustomReward(Wrapper):
         self.curr_score = 0
         self.current_x = 40
 
-        start_frame = 1
+        start_frame = random.randint(15, 35)
         for _ in range(start_frame):
             obs, reward, term, trunc, info = self.env.step(0)
 
