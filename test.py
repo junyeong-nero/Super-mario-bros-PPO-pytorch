@@ -157,6 +157,7 @@ def save_logging_history(
                 "info": to_json_safe(obs.info),
                 "reward": to_json_safe(obs.reward),
                 "observation": obs.to_text(),
+                "objects": obs.to_dict(),
             }
             for obs in history
         ],
@@ -204,8 +205,8 @@ def run_inference(args: argparse.Namespace):
     )
 
     # Initial Reset
-    state_np, _, _, _, _ = env.reset()
-    state = preprocess_image(state_np)
+    done = False
+    state, reward, term, trunc, info = env.reset()
 
     print("Starting inference... Press 'q' to quit.")
 
@@ -216,39 +217,36 @@ def run_inference(args: argparse.Namespace):
         while True:
             # Use no_grad for inference to reduce memory usage and increase speed
             with torch.no_grad():
-                logits, _ = model(state)
+                logits, _ = model(preprocess_image(state))
                 policy = F.softmax(logits, dim=1)
                 action = torch.argmax(policy).item()
 
-            # Step Environment
-            state_next, reward, terminated, truncated, info = env.step(action)
-            done = terminated or truncated
-            state_next_np = preprocess_image(state_next)
-
+            # logging current state & action
             if logging_enabled:
                 obs = SuperMarioObs(
-                    state={"image": state_next},
-                    image=state_next,
+                    state={"image": state},
+                    image=state,
                     info=info,
-                    reward={"distance": info["x_pos"], "done": done},
+                    reward={"action": action, "distance": info["x_pos"], "done": done},
                 )
                 obs.time = datetime.now().strftime("%Y%m%d_%H%M%S")
                 history.append(obs)
 
-            # print(obs.to_text())
+            # Step Environment
+            state_next, reward, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
 
             # Handle Reset or Continue
             if done:
-                print("Episode finished. Resetting...")
-                state_np, _, _, _, _ = env.reset()
-                state = preprocess_image(state_np)
-            else:
-                state = state_next_np
+                # Check for Stage Completion flag
+                if info.get("flag_get"):
+                    print(f"World {args.world} Stage {args.stage} Completed!")
+                    break
 
-            # Check for Stage Completion flag
-            if info.get("flag_get"):
-                print(f"World {args.world} Stage {args.stage} Completed!")
-                break
+                print("Episode finished. Resetting...")
+                state, reward, term, trunc, info = env.reset()
+            else:
+                state = state_next
 
     except KeyboardInterrupt:
         print("\nStopped by user.")
