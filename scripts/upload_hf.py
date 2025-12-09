@@ -53,6 +53,7 @@ def collect_records(log_dir: Path) -> List[Dict[str, Any]]:
                 "world": log_data.get("world"),
                 "stage": log_data.get("stage"),
                 "action_type": log_data.get("action_type"),
+                "action_level": entry.get("reward", {}).get("action", 0),
                 "log_index": log_index,
                 "step": step_idx,
                 "time": entry.get("time"),
@@ -124,14 +125,18 @@ def main():
     print(f"Using log directory: {log_dir}")
 
     records = collect_records(log_dir)
-    print(f"Collected {len(records)} records from {len(list(log_dir.glob('*.json')))} files.")
+    print(
+        f"Collected {len(records)} records from {len(list(log_dir.glob('*.json')))} files."
+    )
 
     dataset = build_dataset(records)
 
     if args.push:
         token = args.hf_token or os.environ.get("HF_TOKEN")
         if not token:
-            raise ValueError("Hugging Face token not provided. Use --hf_token or set HF_TOKEN.")
+            raise ValueError(
+                "Hugging Face token not provided. Use --hf_token or set HF_TOKEN."
+            )
         print(f"Pushing dataset to hub: {args.repo_id} (private={args.private})")
         push_dataset(dataset, args.repo_id, token, args.private)
         print("Upload complete.")
