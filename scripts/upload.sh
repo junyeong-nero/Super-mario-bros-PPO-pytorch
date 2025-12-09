@@ -1,0 +1,1 @@
+uv run scripts/upload_hf.py --world 1 --stage 1 --repo_id yourname/mario-logs
