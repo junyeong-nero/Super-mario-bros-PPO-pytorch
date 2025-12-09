@@ -70,12 +70,6 @@ def get_args() -> argparse.Namespace:
         default="logs",
         help="Directory to save logging files.",
     )
-    parser.add_argument(
-        "--log_index",
-        type=int,
-        default=None,
-        help="Optional log index; defaults to next available number.",
-    )
     return parser.parse_args()
 
 
@@ -124,28 +118,17 @@ def to_json_safe(value: Any) -> Any:
     return value
 
 
-def resolve_log_index(log_dir: Path, provided_index: int | None) -> int:
-    """Returns a log index, using the next available number when not provided."""
-    if provided_index is not None:
-        return provided_index
-
-    existing_indices = [
-        int(path.stem) for path in log_dir.glob("*.json") if path.stem.isdigit()
-    ]
-    return (max(existing_indices) + 1) if existing_indices else 0
-
-
 def save_logging_history(
     history: List[SuperMarioObs],
     args: argparse.Namespace,
     base_dir: Path,
 ) -> Path:
-    """Saves observation history to logs/{world}_{stage}/{index}.json."""
+    """Saves observation history to logs/{world}_{stage}/{timestamp}.json."""
     run_dir = base_dir / f"{args.world}_{args.stage}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    log_index = resolve_log_index(run_dir, args.log_index)
-    log_path = run_dir / f"{log_index}.json"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = run_dir / f"{timestamp}.json"
 
     payload = {
         "world": args.world,
