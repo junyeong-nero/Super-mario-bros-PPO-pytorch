@@ -1,1 +1,0 @@
-uv run scripts/upload_hf.py --world 1 --stage 1 --repo_id junyeong-nero/super-mario-bros-1-1
