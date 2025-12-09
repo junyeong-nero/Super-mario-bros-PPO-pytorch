@@ -5,10 +5,12 @@ Refactored for clarity and performance.
 """
 
 import argparse
+import json
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import cv2
 import numpy as np
@@ -57,6 +59,23 @@ def get_args() -> argparse.Namespace:
         default="output",
         help="Directory to save video output",
     )
+    parser.add_argument(
+        "--log",
+        action="store_true",
+        help="Enable logging observations to JSON.",
+    )
+    parser.add_argument(
+        "--log_dir",
+        type=str,
+        default="logs",
+        help="Directory to save logging files.",
+    )
+    parser.add_argument(
+        "--log_index",
+        type=int,
+        default=None,
+        help="Optional log index; defaults to next available number.",
+    )
     return parser.parse_args()
 
 
@@ -90,6 +109,63 @@ def process_state(state: np.ndarray, device: torch.device) -> torch.Tensor:
     """Converts a numpy state to a torch tensor on the correct device."""
     state_tensor = torch.from_numpy(np.asarray(state, dtype=np.float32))
     return state_tensor.to(device)
+
+
+def to_json_safe(value: Any) -> Any:
+    """Converts numpy types and containers into JSON serializable objects."""
+    if isinstance(value, dict):
+        return {k: to_json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [to_json_safe(v) for v in value]
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, (np.generic,)):
+        return value.item()
+    return value
+
+
+def resolve_log_index(log_dir: Path, provided_index: int | None) -> int:
+    """Returns a log index, using the next available number when not provided."""
+    if provided_index is not None:
+        return provided_index
+
+    existing_indices = [
+        int(path.stem) for path in log_dir.glob("*.json") if path.stem.isdigit()
+    ]
+    return (max(existing_indices) + 1) if existing_indices else 0
+
+
+def save_logging_history(
+    history: List[SuperMarioObs],
+    args: argparse.Namespace,
+    base_dir: Path,
+) -> Path:
+    """Saves observation history to logs/{world}_{stage}/{index}.json."""
+    run_dir = base_dir / f"{args.world}_{args.stage}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    log_index = resolve_log_index(run_dir, args.log_index)
+    log_path = run_dir / f"{log_index}.json"
+
+    payload = {
+        "world": args.world,
+        "stage": args.stage,
+        "action_type": args.action_type,
+        "history": [
+            {
+                "time": obs.time,
+                "info": to_json_safe(obs.info),
+                "reward": to_json_safe(obs.reward),
+                "observation": obs.to_text(),
+            }
+            for obs in history
+        ],
+    }
+
+    with log_path.open("w", encoding="utf-8") as log_file:
+        json.dump(payload, log_file, indent=2)
+
+    return log_path
 
 
 # -----------------------------------------------------------------------------
@@ -133,7 +209,8 @@ def run_inference(args: argparse.Namespace):
 
     print("Starting inference... Press 'q' to quit.")
 
-    log_file = log_filename.open("a", encoding="utf-8")
+    logging_enabled = args.log
+    history = []
 
     try:
         while True:
@@ -148,14 +225,17 @@ def run_inference(args: argparse.Namespace):
             done = terminated or truncated
             state_next_np = preprocess_image(state_next)
 
-            obs = SuperMarioObs(
-                state={"image": state_next},
-                image=state_next,
-                info=info,
-                reward={"distance": info["x_pos"], "done": done},
-            )
+            if logging_enabled:
+                obs = SuperMarioObs(
+                    state={"image": state_next},
+                    image=state_next,
+                    info=info,
+                    reward={"distance": info["x_pos"], "done": done},
+                )
+                obs.time = datetime.now().strftime("%Y%m%d_%H%M%S")
+                history.append(obs)
 
-            print(obs.to_text())
+            # print(obs.to_text())
 
             # Handle Reset or Continue
             if done:
@@ -176,7 +256,9 @@ def run_inference(args: argparse.Namespace):
         print(f"\nAn error occurred: {e}")
     finally:
         monitor.close()
-        log_file.close()
+        if logging_enabled and history:
+            log_path = save_logging_history(history, args, Path(args.log_dir))
+            print(f"Saved log to: {log_path}")
         cv2.destroyAllWindows()
         print("Resources released.")
 
